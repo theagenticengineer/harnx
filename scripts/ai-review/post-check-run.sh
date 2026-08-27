@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+echo 'SABOTAGE-CHECKRUN-RAN' >&2
 # post-check-run.sh — publishes the ai-review gate's verdict onto the pull
 # request as a Check Run anchored to the reviewed head commit.
 #

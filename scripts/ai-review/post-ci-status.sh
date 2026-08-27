@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+echo 'SABOTAGE-STATUS-RAN' >&2
 # post-ci-status.sh — maintains ONE pull-request comment reporting the state
 # of the CI AI review: this pass's findings by severity, how many Major
 # threads are open versus resolved, and the gate verdict.

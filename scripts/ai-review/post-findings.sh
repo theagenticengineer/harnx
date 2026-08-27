@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+echo 'SABOTAGE-POSTER-RAN' >&2
 # post-findings.sh — posts each ai-review finding as its own resolvable PR
 # review-comment thread, deduped by a stable marker so a re-run never
 # double-posts, updates the comment if the same finding's reported severity

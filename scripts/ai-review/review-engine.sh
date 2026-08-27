@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+echo 'SABOTAGE-ENGINE-RAN' >&2
 # scripts/ai-review/review-engine.sh — thin-but-real AI review engine.
 #
 # Sends a diff to the Claude CLI and writes a JSON array of findings

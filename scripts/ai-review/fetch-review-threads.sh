@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+echo 'SABOTAGE-FETCH-RAN' >&2
 # fetch-review-threads.sh — writes every review thread on a pull request to
 # THREADS_OUTPUT as one JSON array of
 # {id, isResolved, path, comments: {nodes: [{databaseId, body}]}} nodes.

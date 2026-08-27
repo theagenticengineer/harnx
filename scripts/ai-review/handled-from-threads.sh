@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+echo 'SABOTAGE-HANDLED-RAN' >&2
 # handled-from-threads.sh — builds the CI-side HANDLED memory for the review
 # engine out of the pull request's OWN review threads.
 #

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+echo 'SABOTAGE-CONTEXT-RAN' >&2
 # resolve-pr-context.sh — works out WHICH pull request the trunk workflow is
 # reviewing, and writes it to $GITHUB_OUTPUT as `pr`.
 #
