@@ -1,0 +1,40 @@
+# TRUST-ANCHOR SUBSET. This is deliberately NOT the repository's full mise.toml.
+#
+# This branch carries only the ai-review security core, so it pins only the
+# tools the ai-review trunk workflow actually executes, and none of the
+# hygiene floor's linters and formatters. The full file, with the complete
+# toolchain and every `mise run` task, lives on the child branch immediately
+# above this one and replaces this one wholesale at the same path.
+#
+# DO NOT "reconcile" this file with the child branch's copy. They are meant to
+# differ. Pulling the floor's toolchain in here would make the job that holds
+# the review engine's API token install ten tools it never runs, for no
+# benefit and a wider supply-chain surface in the one job where that matters
+# most.
+#
+# What IS load-bearing here, and must survive any edit:
+#   - the claude-code pin and its npm_args (see the comment on it below)
+#   - jq, pinned rather than relying on the runner's preinstalled copy, so the
+#     review scripts parse with a known version
+# Both are runtime dependencies of .github/workflows/ai-review-trunk.yml. Drop
+# either and the trunk workflow fails at runtime, on the default branch, with
+# an error that points nowhere near this file.
+
+[tools]
+jq = "1.7.1"
+# npm_args counters mise's npm backend default of --ignore-scripts=true: this
+# package ships its actual binary via a postinstall script that fetches a
+# platform-native optional dependency, so skipping scripts leaves `claude`
+# installed but non-functional ("claude native binary not installed").
+# Verified locally with a forced fresh reinstall (mise install --force) that
+# this config actually produces a working binary. This alone was NOT enough
+# on CI, though: mise itself is not pinned anywhere else in this repo, so
+# jdx/mise-action silently installed whatever mise release was latest at
+# runtime, a materially newer version than the one this config was verified
+# against, whose npm backend did not honor npm_args the same way and hit the
+# exact same "native binary not installed" failure regardless of this
+# setting. The `version: "2025.10.10"` pin on every jdx/mise-action step in
+# .github/workflows/ai-review-trunk.yml (matching the mise release this was
+# verified against) is required alongside this npm_args setting, not
+# optional; either one alone reproduced the CI failure.
+"npm:@anthropic-ai/claude-code" = { version = "2.1.245", npm_args = "--ignore-scripts=false" }

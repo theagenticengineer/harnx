@@ -1,0 +1,61 @@
+name: git
+# PLACEHOLDER. THIS WORKFLOW VERIFIES NOTHING.
+#
+# The companion to the placeholder `ci.yml` beside it, for the same reason and
+# at the same cost. Read that file's header first; it carries the full
+# argument, which is not repeated here.
+#
+# The real `git.yml`, which actually validates commit messages, branch names,
+# pull request titles and pull request bodies, lives on the CHILD BRANCH
+# IMMEDIATELY ABOVE this one, together with the scripts/git-discipline/
+# scripts those checks execute. None of that is here.
+#
+# The four contexts below are required by branch protection, so without this
+# file a pull request whose head is the trust anchor could never report them.
+# With it they report green having checked nothing, which each job says out
+# loud in a warning annotation.
+#
+# REMEDIATION: the child branch above carries the real checks.
+on: [pull_request]
+permissions: {}
+jobs:
+  commitlint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Report a placeholder result
+        env:
+          MSG: >-
+            'commitlint' verified NOTHING on this branch. The real check lives on the
+            child branch above.
+        run: echo "::warning title=Placeholder check::$MSG"
+  branch-name:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Report a placeholder result
+        env:
+          MSG: >-
+            'branch-name' verified NOTHING on this branch. The real check lives on the
+            child branch above.
+        run: echo "::warning title=Placeholder check::$MSG"
+  pr-title:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Report a placeholder result
+        env:
+          MSG: >-
+            'pr-title' verified NOTHING on this branch. The real check lives on the
+            child branch above.
+        run: echo "::warning title=Placeholder check::$MSG"
+  pr-body:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Report a placeholder result
+        env:
+          MSG: >-
+            'pr-body' verified NOTHING on this branch. The real check lives on the
+            child branch above.
+        run: echo "::warning title=Placeholder check::$MSG"

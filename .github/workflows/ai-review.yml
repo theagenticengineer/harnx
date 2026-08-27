@@ -1,0 +1,83 @@
+name: ai-review
+# The CREDENTIAL-FREE half of the ai-review pipeline. Its counterpart is
+# .github/workflows/ai-review-trunk.yml; docs/ai-review-setup.md explains the
+# whole architecture from scratch, and AGENTS.md's "AI review" section
+# summarises it for contributors.
+#
+# This workflow is pull_request-triggered, which means GitHub reads THIS FILE,
+# and every script it calls, from the pull request's own branch. A pull
+# request author therefore controls everything that runs here, on every push,
+# long before any human reviews or merges it. That is not a defect to be
+# patched; it is the defining property of a pull_request workflow, and the
+# only safe response is to make sure this side of the pipeline has nothing
+# worth stealing:
+#
+#   - it names no secret at all (no engine token, no App id or key)
+#   - its only token is the default read-scoped github.token that
+#     actions/checkout needs for a public diff, and nothing here uses it to
+#     write
+#   - it does not run the review engine, post a comment, or report the gate
+#
+# All it does is extract the diff under review as plain text and hand it over
+# as an artifact. Everything credentialed happens in the trunk workflow, which
+# GitHub always resolves from the repository's DEFAULT branch, so no edit made
+# on a pull request branch can change what it executes. The diff crosses that
+# boundary as inert DATA, never as code.
+concurrency:
+  group: ai-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+# Deny by default, then grant the single read scope the one job needs. An
+# empty top-level block is not cosmetic: without it a job that forgets its own
+# permissions block inherits the repository's default token scopes, which can
+# include write.
+permissions: {}
+jobs:
+  extract-diff:
+    name: extract the diff for review
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        # fetch-depth: 0 fetches every branch, which is what makes the base
+        # ref below resolvable; a shallow default checkout has no origin/<base>
+        # to diff against.
+        with: { fetch-depth: 0 }
+      # `git diff`, deliberately, and nothing else. This step runs on the pull
+      # request's own branch, so anything more expressive here would be
+      # attacker-controlled logic; a diff extraction has no credential to
+      # abuse and no output the trunk side treats as anything but text.
+      #
+      # Diffed from the checked-out merge ref (actions/checkout's default for
+      # a pull_request event), matching what the single-workflow pipeline this
+      # replaced reviewed, so the split changes no finding's line numbers.
+      - name: Extract the diff under review
+        env:
+          BASE_REF: origin/${{ github.event.pull_request.base.ref }}
+        run: |
+          mkdir -p ai-review-input
+          git diff "$BASE_REF"...HEAD >ai-review-input/diff.txt
+          echo "diff bytes: $(wc -c <ai-review-input/diff.txt)"
+      # The ONLY thing that crosses to the credentialed side. The artifact's
+      # name is part of the contract with ai-review-trunk.yml: a run that
+      # uploads something else (a pull request is free to rewrite this file)
+      # simply makes the trunk workflow's download fail, which fails the
+      # ai-review-resolved gate closed rather than reviewing nothing.
+      - name: Upload the diff for the trunk workflow
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: ai-review-diff
+          path: ai-review-input/
+          retention-days: 1
+          # `error`, not the default `warn`: an upload that matched nothing
+          # would leave the trunk workflow with no diff to review, and a
+          # review of nothing must never be reported as a clean pass. This
+          # fails here, loudly, instead. A zero-byte diff (a pull request
+          # whose changes are already in its base) still MATCHES the path, so
+          # this does not fire on that legitimate state; the engine documents
+          # an empty diff as "no findings".
+          if-no-files-found: error
