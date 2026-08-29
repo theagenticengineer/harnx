@@ -1,0 +1,49 @@
+# A change to any file that DEFINES or EXECUTES what a required check
+# actually enforces requires a review from a code owner, never satisfiable
+# by the PR author's own approval of their own PR. This is the
+# tamper-evidence measure for every required check: each one's real content
+# lives in files under repo control, so an edit that silently weakens one
+# (making check-resolved.sh always exit 0; dropping a hook entry from
+# .pre-commit-config.yaml so the "pre-commit" check still reports green with
+# less actually checked; blanking .yamllint.yaml or disabling NoEmDash in
+# styles/House/ so yamllint/vale silently stop catching anything while
+# "pre-commit" still reports green; redefining mise.toml's test task to a
+# no-op; weakening validate-commit-msg.sh so commitlint stops catching
+# anything; swallowing a failure inside scripts/mise/test.sh so shell-tests
+# reports green regardless of what scripts/tests/*.bash actually assert;
+# editing configure-protection.sh to drop a check from the required list, or
+# flip require_code_owner_reviews back to false; flipping
+# .harnx/instance-config.toml's identity_policy from "private" to "public", or
+# widening its allowed_authors, so a commit author the repo previously refused
+# is silently accepted) must itself pass human review before it can merge.
+# This list is systematically derived from
+# .pre-commit-config.yaml's own hook entries and their referenced config
+# files, not built up finding by finding: every hook that gates the
+# required "pre-commit" check, plus every file that gates the other eight
+# required checks (gitleaks, actionlint, shell-tests, commitlint,
+# branch-name, pr-title, pr-body, ai-review-resolved), is covered below.
+/scripts/ai-review/ @fabioluiz1
+/scripts/git-discipline/ @fabioluiz1
+/scripts/tests/ @fabioluiz1
+/scripts/mise/ @fabioluiz1
+/scripts/configure-protection.sh @fabioluiz1
+/.github/workflows/ @fabioluiz1
+/.github/CODEOWNERS @fabioluiz1
+# AGENTS.md is here for a different reason than everything else on this list,
+# and the distinction is worth keeping straight. Every other entry DEFINES or
+# EXECUTES a required check, so editing it can make a gate pass that should
+# have failed. AGENTS.md executes nothing and gates nothing: no check reads it,
+# and editing it cannot turn a red check green.
+#
+# It is protected because this repository is an agentic-development harness and
+# AGENTS.md is the instruction set agents read before acting. A silent edit
+# cannot weaken a gate, but it can change what an agent believes it is supposed
+# to do, which is a distinct kind of tampering that the rest of this list does
+# not cover.
+/AGENTS.md @fabioluiz1
+/.pre-commit-config.yaml @fabioluiz1
+/.harnx/instance-config.toml @fabioluiz1
+/mise.toml @fabioluiz1
+/.yamllint.yaml @fabioluiz1
+/.vale.ini @fabioluiz1
+/styles/ @fabioluiz1
