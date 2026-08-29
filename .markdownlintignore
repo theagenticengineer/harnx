@@ -1,0 +1,17 @@
+# Paths markdownlint does not lint.
+#
+# Deliberately short. A long ignore file is how a linter stops being a gate,
+# one exception at a time, so anything added here needs a reason that is about
+# the FILE rather than about the rule being inconvenient.
+
+# Vendored or generated Markdown, if any ever lands. Nothing matches today; the
+# entry exists so the first generated file is not linted as though a human
+# wrote it.
+**/vendor/**
+**/node_modules/**
+
+# The worktree directory holds checkouts of OTHER branches of this same
+# repository. Linting those from here would report findings against a commit
+# that is not the one being checked, and each of those branches lints its own
+# tree anyway.
+.worktrees/**

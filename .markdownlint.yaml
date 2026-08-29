@@ -1,0 +1,37 @@
+# markdownlint config: the floor's Markdown rules, stated rather than inherited.
+#
+# WHY THIS FILE EXISTS AT ALL when the tree already passed on the tool's
+# defaults: "passes on the defaults" is not a rule, it is a coincidence that
+# holds until the next version bump changes one. mise.toml pins the version so
+# the tool cannot change under us; this pins the RULES so a deliberate
+# relaxation is a diff somebody has to justify rather than a default somebody
+# inherited. Same argument .yamllint.yaml already makes for YAML.
+default: true
+
+# MD013 (line length) is OFF. Every Markdown file here is hard-wrapped by hand
+# at roughly 80 columns, which is the habit this rule exists to enforce, but the
+# rule counts a URL or a long table row as a violation it is impossible to fix
+# without making the source worse. Prose length is governed instead by vale's
+# House.ProseWalls, which measures the thing that actually matters to a reader
+# (how much text arrives in one block) rather than where the newlines fall.
+MD013: false
+
+# MD024 (duplicate headings) is limited to SIBLINGS. Repeating a heading like
+# "Why" under different parents is how these documents are structured, and
+# forbidding it outright would push them toward headings that are unique but
+# less readable. Duplicates under the SAME parent are still an error, because
+# those give a document two anchors with the same name.
+MD024:
+  siblings_only: true
+
+# MD033 (inline HTML) is OFF for the elements the ai-review pipeline depends on.
+# post-findings.sh writes HTML comment markers (`<!-- ai-review-key:... -->`)
+# into Markdown bodies, and docs that explain the pipeline quote them.
+MD033:
+  allowed_elements:
+    - br
+    - details
+    - summary
+
+# MD041 (first line must be a top-level heading) stays ON, which is what keeps
+# every document introducing itself.

@@ -1,0 +1,31 @@
+# Root .gitignore: what this repository refuses to track.
+#
+# Scoped deliberately narrow. `.harnx/.gitignore` and `.worktrees/.gitignore`
+# already cover what belongs to those directories, and repeating their entries
+# here would create two places to change one rule. This file is for what has no
+# directory of its own.
+
+# Tool caches and state, none of which is reproducible from the tree and all of
+# which is derived. `mise.toml` pins the versions; nothing here is an input.
+.mise/
+node_modules/
+__pycache__/
+*.pyc
+
+# Editor and OS droppings. Not tracked, and equally not a reason for anybody
+# else to see a diff.
+.DS_Store
+*.swp
+*~
+.idea/
+.vscode/
+
+# Secrets, by shape rather than by name. Nothing in this repository should ever
+# hold one, and `gitleaks` runs over the history as a real gate rather than
+# relying on this list. This is the earlier of the two lines of defence: it
+# stops the accident, while gitleaks catches what got past it.
+*.pem
+*.key
+.env
+.env.*
+!.env.example

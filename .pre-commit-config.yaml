@@ -1,37 +1,74 @@
-# TRUST-ANCHOR SUBSET. This is deliberately NOT the repository's full
-# .pre-commit-config.yaml, for the same reason mise.toml and ci.yml here are
-# subsets: this branch carries the ai-review security core, not the hygiene
-# floor. The full file, with all fourteen gates, lives on the child branch
-# immediately above this one and replaces this one wholesale at the same path.
+# THE FULL HYGIENE FLOOR. Every gate a generated repository is born with is
+# declared here, and this file replaces the trust anchor's deliberate subset at
+# the same path. A repository harnx creates gets this one, not that one.
 #
-# WHAT IS HERE, and why only this. Issue #37 criterion 43 scopes the anchor's
-# local gates to the trunk verifying its OWN code: shellcheck and shfmt over
-# its own shell scripts, plus the paired-test gate criterion 27 defines. Not
-# vale, not markdownlint, not taplo, not gitleaks; those are floor gates over
-# floor artifacts and pulling them in here would make this branch a second
-# copy of the floor rather than the smallest set that has to be trusted.
+# EVERY HOOK IS `local`, running the tool mise.toml pinned, rather than a remote
+# hook repository pinning its own copy of the same tool.
 #
-# EVERY HOOK IS `local`, running the tool mise pinned, rather than a remote
-# hook repository pinning its own copy. The child branch's config uses remote
-# repos for shellcheck and shfmt, which is fine there because that branch has
-# no separate mise pins for them to disagree with. Here it would create two
-# pinned versions of one tool, one in mise.toml for `mise run lint` and one in
-# this file for the hook, free to drift apart and to disagree about whether a
-# script is formatted. One pin, in mise.toml, read by both paths.
+# The anchor's config states this rule and, at the time it was written, exempted
+# this branch from it: the child "uses remote repos for shellcheck and shfmt,
+# which is fine there because that branch has no separate mise pins for them to
+# disagree with". That exemption expired the moment mise.toml here grew the full
+# toolchain. Five tools were then pinned TWICE, once in mise.toml for the `lint`
+# tasks and once as a `rev:` here for the hook, free to drift apart and to
+# disagree about whether a file is formatted. Nobody would see the disagreement:
+# both report Passed, on different versions, and the hook and CI would enforce
+# different rules while claiming to enforce one.
 #
-# EVERY HOOK DECLARES ITS STAGE. A hook with no `stages:` key runs at EVERY
-# installed stage, and setup-hooks.sh installs four of them, so an unstaged
-# hook would run shellcheck again on every push and on every checkout, and
-# would run it at commit-msg time against the commit message file, where it
-# matches nothing and reports "(no files to check) Skipped". None of that
-# catches anything the pre-commit stage did not already catch a moment
-# earlier; it just spends time and prints lines, and a tool that decorates
-# every operation with output nobody acts on teaches its readers to skip the
-# output that matters. scripts/tests/hook-stages.bash fails a hook added here
-# without a stage.
+# scripts/tests/hook-stages.bash is the gate that caught it. It arrived on the
+# anchor, passed there, and failed here on this file the moment the two branches
+# were stacked, which is the whole point of a floor gate that runs on the branch
+# below as well as its own.
+#
+# EVERY HOOK DECLARES ITS STAGE. A hook with no `stages:` key runs at every
+# INSTALLED stage, and scripts/mise/setup-hooks.sh installs four. An unstaged
+# hook re-runs at push and at checkout, and at commit-msg time it runs against
+# the commit message file, where it matches nothing and prints
+# "(no files to check) Skipped". None of that catches anything the pre-commit
+# stage did not catch a moment earlier. It spends time and prints lines, and a
+# tool that decorates every operation with output nobody acts on teaches its
+# readers to skip the output that matters.
 repos:
   - repo: local
     hooks:
+      # --- secret scanning ---------------------------------------------------
+      - id: gitleaks
+        name: gitleaks
+        # `dir .`, over the WHOLE TREE, with no filenames passed.
+        #
+        # `--staged` looks at the index against HEAD. At commit time that is
+        # right; under `pre-commit run --all-files`, which is what CI runs and
+        # what `mise run lint` runs, nothing is staged. Measured: it scanned
+        # "0 commits", reported "no leaks found", and exited 0. A required check
+        # that reports green having read nothing is the precise failure this
+        # floor exists to prevent, and it was doing it here.
+        #
+        # `dir` TAKES ONE PATH, and this is the part that has to be got right:
+        # given two or more it does not error, it silently finds nothing and
+        # exits 0. Measured, with a planted `ghp_` token: alone it exits 1, and
+        # as either the first or the second of two arguments it exits 0. So
+        # letting pre-commit append filenames would rebuild the same
+        # green-over-an-unscanned-tree failure that `--staged` had.
+        #
+        # `always_run` with no filenames, scanning `.`, is correct in both modes
+        # and scans everything either way. What it does not cover is history: a
+        # secret added and then removed within one branch is invisible to a
+        # content scan. That is the `gitleaks` job in ci.yml, which runs
+        # `gitleaks git .` with fetch-depth 0 for exactly that reason. Content
+        # here, history there.
+        entry: mise exec -- gitleaks dir . --redact --no-banner --config .gitleaks.toml
+        language: system
+        always_run: true
+        pass_filenames: false
+        stages: [pre-commit]
+      # EVERY HOOK NAMES ITS CONFIG. Each of these tools will find its config
+      # by searching upward from the working directory, and that search is not
+      # the same from a subdirectory, from a worktree, or from a CI checkout.
+      # Naming the file makes the hook run the same rules everywhere, and makes
+      # a missing config an error rather than a silent fall back to the tool's
+      # defaults, which is the failure this floor cannot detect by looking at a
+      # green check.
+      # --- formatters and linters, one per file type -------------------------
       - id: shellcheck
         name: shellcheck
         entry: mise exec -- shellcheck
@@ -40,14 +77,54 @@ repos:
         stages: [pre-commit]
       - id: shfmt
         name: shfmt
-        # `-d` makes this a real gate: it prints a diff and exits non-zero on
-        # an unformatted file, instead of the default that writes formatted
-        # output to stdout and always exits 0. `-i 2` matches the indentation
-        # every script here is already written in.
+        # `-d` makes this a real gate: it prints a diff and exits non-zero on an
+        # unformatted file, instead of the default that writes formatted output
+        # to stdout and always exits 0. `-i 2` matches how every script here is
+        # written.
         entry: mise exec -- shfmt -i 2 -d
         language: system
         files: \.(sh|bash)$
         stages: [pre-commit]
+      - id: yamllint
+        name: yamllint
+        entry: mise exec -- yamllint -c .yamllint.yaml
+        language: system
+        files: \.(yml|yaml)$
+        stages: [pre-commit]
+      - id: actionlint
+        name: actionlint
+        entry: mise exec -- actionlint
+        language: system
+        files: ^\.github/workflows/.*\.(yml|yaml)$
+        stages: [pre-commit]
+      - id: markdownlint
+        name: markdownlint
+        entry: mise exec -- markdownlint --config .markdownlint.yaml
+        language: system
+        files: \.md$
+        stages: [pre-commit]
+      - id: taplo
+        name: taplo fmt --check
+        entry: mise exec -- taplo fmt --check --config .taplo.toml
+        language: system
+        files: \.toml$
+        stages: [pre-commit]
+      - id: vale
+        name: vale (prose-style floor)
+        entry: mise exec -- vale --config .vale.ini --minAlertLevel=error
+        language: system
+        files: \.md$
+        stages: [pre-commit]
+      - id: lychee
+        name: lychee (offline link check)
+        # `--offline`: relative links and heading fragments only, no network.
+        # An external-URL check belongs on a schedule, not on a commit; see
+        # lychee.toml for the argument.
+        entry: mise exec -- lychee --offline --include-fragments --config lychee.toml
+        language: system
+        files: \.md$
+        stages: [pre-commit]
+      # --- this repository's own gates ---------------------------------------
       - id: check-paired-tests
         name: check-paired-tests
         entry: scripts/check-paired-tests.sh
@@ -59,3 +136,47 @@ repos:
         always_run: true
         pass_filenames: false
         stages: [pre-commit]
+      - id: check-agents-index
+        name: check-agents-index
+        entry: scripts/check-agents-index.sh
+        language: system
+        # The question is about the whole tree, like check-paired-tests: an
+        # index is complete or it is not, and a commit that DELETES a rule
+        # document would pass a filename-scoped check because the deleted file
+        # is not among the filenames.
+        always_run: true
+        pass_filenames: false
+        stages: [pre-commit]
+      - id: git-identity
+        name: check-git-identity
+        entry: scripts/git-discipline/check-git-identity.sh
+        language: system
+        always_run: true
+        pass_filenames: false
+        stages: [pre-commit]
+      - id: commit-msg
+        name: validate-commit-msg
+        entry: scripts/git-discipline/validate-commit-msg.sh
+        language: system
+        stages: [commit-msg]
+      - id: branch-name
+        name: validate-branch-name
+        entry: scripts/git-discipline/validate-branch-name.sh
+        language: system
+        always_run: true
+        pass_filenames: false
+        stages: [pre-commit, post-checkout]
+      - id: worktree-path
+        name: check-worktree-path
+        entry: scripts/git-discipline/check-worktree-path.sh
+        language: system
+        always_run: true
+        pass_filenames: false
+        stages: [post-checkout]
+      - id: locally-reviewed
+        name: check-locally-reviewed
+        entry: scripts/ai-review/check-locally-reviewed.sh
+        language: system
+        always_run: true
+        pass_filenames: false
+        stages: [pre-push]

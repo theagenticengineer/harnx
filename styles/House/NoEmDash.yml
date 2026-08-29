@@ -1,0 +1,24 @@
+extends: existence
+message: >-
+  Don't use an em-dash or a double-hyphen ('%s'); use a comma, colon,
+  semicolon, period, or a connective word ('and', 'but', 'so', 'because')
+  instead.
+link: https://vale.sh/docs/topics/styles/
+level: error
+scope: text
+# `raw`, not `tokens`: vale's `tokens` key auto-wraps each entry in ASCII
+# `\b...\b` word boundaries, which never match around a non-ASCII character
+# like an em-dash. `raw` is used as-is, with no such wrapping. A code span or
+# fenced code block is its own scope in vale's markdown parser, so a real CLI
+# flag like `--all-files` is never matched here.
+# Two alternatives, deliberately NOT one pattern with optional spaces on both
+# sides. An em-dash substitute is either closed up ("word--word") or spaced on
+# BOTH sides ("word -- word"). A CLI flag is spaced on the LEFT only
+# ("run --no-verify"), and a single ` ?-- ?` pattern cannot tell the two apart:
+# it matched the flag too, so ordinary prose naming a flag failed this
+# error-level, merge-blocking rule unless the author happened to wrap it in
+# backticks. Requiring the spacing to be symmetric keeps every real em-dash
+# substitute and stops flagging flags.
+raw:
+  - "—|(?:[A-Za-z])--(?:[A-Za-z])|(?:[A-Za-z]) -- (?:[A-Za-z])"
+exceptions: []

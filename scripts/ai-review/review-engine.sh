@@ -103,7 +103,18 @@
 #                           empty is treated as no open findings.
 set -euo pipefail
 
-: "${AI_REVIEW_ENGINE_TOKEN:?AI_REVIEW_ENGINE_TOKEN is required}"
+# `?`, NOT `:?`. An UNSET token is still a hard error, because a caller that
+# forgot to pass one is a bug. An explicitly EMPTY one is allowed, and means
+# "use whatever login the CLI already has", which is how the local runner works
+# on a developer machine: `claude` authenticates from ~/.claude, and an empty
+# value is precisely what makes it fall back there.
+#
+# This does not weaken CI. The credentialed path reaches this file through
+# claude.sh, which already refuses an empty token by name, for the reviewer that
+# was asked for and could not run. That check is upstream of this one and is not
+# affected. The only caller this changes is ai-review-local.sh, which invokes
+# the engine directly and has no reviewer registry to satisfy.
+: "${AI_REVIEW_ENGINE_TOKEN?AI_REVIEW_ENGINE_TOKEN is required}"
 : "${AI_REVIEW_DIFF_FILE:?AI_REVIEW_DIFF_FILE is required}"
 : "${AI_REVIEW_OUTPUT:?AI_REVIEW_OUTPUT is required}"
 model="${AI_REVIEW_MODEL:-sonnet}"
@@ -531,7 +542,30 @@ call_engine() {
     # and without it reads the file. scripts/tests/review-engine.bash pins the
     # flag AND its empty value, so widening it to "default" fails the suite
     # rather than silently re-arming tool use.
-    if CLAUDE_CODE_OAUTH_TOKEN="$AI_REVIEW_ENGINE_TOKEN" \
+    # WITH a token, it is put in the environment. WITHOUT one, the variable is
+    # actively UNSET rather than merely left alone.
+    #
+    # Both halves matter and neither is obvious:
+    #
+    #   - Passing `CLAUDE_CODE_OAUTH_TOKEN=` with an empty value does not mean
+    #     "no token". It means "the token is the empty string", which overrides
+    #     a working saved login with something that cannot authenticate.
+    #   - Leaving it alone is worse. The developer running this may already have
+    #     CLAUDE_CODE_OAUTH_TOKEN exported in their shell profile, which is the
+    #     exact hazard the AI_REVIEW_ prefix exists to prevent and which
+    #     ai-review-local.sh prints a warning about. Inheriting it would send a
+    #     stale token this script deliberately does not read straight to the CLI
+    #     anyway, and the "falling back to your ~/.claude login" message would
+    #     be false.
+    #
+    # `env -u` is what makes the fallback real. The array is expanded with the
+    # `+` form so an empty one is not an unbound-variable error under `set -u`
+    # on bash 3.2, which is what macOS ships.
+    engine_env=(-u CLAUDE_CODE_OAUTH_TOKEN)
+    if [ -n "$AI_REVIEW_ENGINE_TOKEN" ]; then
+      engine_env=(CLAUDE_CODE_OAUTH_TOKEN="$AI_REVIEW_ENGINE_TOKEN")
+    fi
+    if env ${engine_env[@]+"${engine_env[@]}"} \
       claude -p --output-format json --model "$model" --tools "" \
       <"$prompt_file" >"$raw" 2>"$raw_err"; then
       return 0

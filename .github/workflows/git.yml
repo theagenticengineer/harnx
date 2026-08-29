@@ -1,61 +1,90 @@
 name: git
-# PLACEHOLDER. THIS WORKFLOW VERIFIES NOTHING.
-#
-# The companion to the placeholder `ci.yml` beside it, for the same reason and
-# at the same cost. Read that file's header first; it carries the full
-# argument, which is not repeated here.
-#
-# The real `git.yml`, which actually validates commit messages, branch names,
-# pull request titles and pull request bodies, lives on the CHILD BRANCH
-# IMMEDIATELY ABOVE this one, together with the scripts/git-discipline/
-# scripts those checks execute. None of that is here.
-#
-# The four contexts below are required by branch protection, so without this
-# file a pull request whose head is the trust anchor could never report them.
-# With it they report green having checked nothing, which each job says out
-# loud in a warning annotation.
-#
-# REMEDIATION: the child branch above carries the real checks.
-on: [pull_request]
-permissions: {}
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+on:
+  pull_request:
+    # `edited` is load-bearing, not completeness for its own sake. The default
+    # type set is [opened, synchronize, reopened], none of which fire when a
+    # pull request's TITLE or BODY changes. Without `edited`, `pr-title` and
+    # `pr-body` validate whatever the title and body were at the last push and
+    # then stay green: the title can afterwards be edited to anything at all,
+    # and it is the title that becomes the squash commit's subject on merge.
+    # That turns both gates into a formality anyone can step around by editing
+    # the pull request after CI has passed.
+    types: [opened, synchronize, reopened, edited]
+permissions:
+  contents: read
 jobs:
   commitlint:
     runs-on: ubuntu-latest
-    timeout-minutes: 2
+    timeout-minutes: 5
     steps:
-      - name: Report a placeholder result
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with: { fetch-depth: 0 }
+      - name: Validate commit messages in PR range
         env:
-          MSG: >-
-            'commitlint' verified NOTHING on this branch. The real check lives on the
-            child branch above.
-        run: echo "::warning title=Placeholder check::$MSG"
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          COMMIT_MSG_BRANCH: ${{ github.head_ref }}
+        run: bash scripts/git-discipline/ci-validate-commits.sh
+      # Folded into this job rather than given its own required context, so the
+      # floor's required-check set is unchanged. It belongs here: the job
+      # already validates every commit in the range, this adds the other half
+      # of what a commit's metadata has to satisfy.
+      #
+      # This is the ONLY place the author rule is actually enforceable.
+      # check-git-identity.sh reads `git config`, so it governs the machine
+      # about to commit: skipped on a runner, absent unless a contributor ran
+      # `pre-commit install`, and blind to every commit that already exists.
+      # This step reads the commits themselves, so a branch cannot carry an
+      # identity the repo rejects while CI reports green over it.
+      #
+      # `if: always()`, so a malformed commit MESSAGE does not hide a disallowed
+      # commit AUTHOR. Without it Actions skips this step the moment the step
+      # above fails, and a branch carrying both problems reports one per push,
+      # costing a CI round-trip per problem. That is the same accumulate-rather
+      # -than-abort rule ci-validate-commits.sh and check-commit-authors.sh each
+      # apply within their own loops, and evaluate-gate.sh applies across the
+      # two review checks; applying it inside one loop while the loops
+      # themselves short-circuit each other would be the rule holding only
+      # where it is cheapest.
+      #
+      # The job's own conclusion is unaffected: a failure in either step still
+      # fails `commitlint`, because `always()` governs whether this step RUNS,
+      # not whether its result counts.
+      - name: Validate commit author identities in PR range
+        if: ${{ always() }}
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: bash scripts/git-discipline/check-commit-authors.sh
   branch-name:
     runs-on: ubuntu-latest
-    timeout-minutes: 2
+    timeout-minutes: 5
     steps:
-      - name: Report a placeholder result
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: Validate branch name
         env:
-          MSG: >-
-            'branch-name' verified NOTHING on this branch. The real check lives on the
-            child branch above.
-        run: echo "::warning title=Placeholder check::$MSG"
+          HEAD_REF: ${{ github.head_ref }}
+        run: bash scripts/git-discipline/validate-branch-name.sh "$HEAD_REF"
   pr-title:
     runs-on: ubuntu-latest
-    timeout-minutes: 2
+    timeout-minutes: 5
     steps:
-      - name: Report a placeholder result
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: Validate PR title
         env:
-          MSG: >-
-            'pr-title' verified NOTHING on this branch. The real check lives on the
-            child branch above.
-        run: echo "::warning title=Placeholder check::$MSG"
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          HEAD_REF: ${{ github.head_ref }}
+        run: bash scripts/git-discipline/validate-pr-title.sh "$PR_TITLE" "$HEAD_REF"
   pr-body:
     runs-on: ubuntu-latest
-    timeout-minutes: 2
+    timeout-minutes: 5
     steps:
-      - name: Report a placeholder result
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: Validate PR body
         env:
-          MSG: >-
-            'pr-body' verified NOTHING on this branch. The real check lives on the
-            child branch above.
-        run: echo "::warning title=Placeholder check::$MSG"
+          PR_BODY: ${{ github.event.pull_request.body }}
+          HEAD_REF: ${{ github.head_ref }}
+        run: bash scripts/git-discipline/validate-pr-body.sh "$PR_BODY" "$HEAD_REF"

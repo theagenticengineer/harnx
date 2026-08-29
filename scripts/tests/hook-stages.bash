@@ -101,7 +101,24 @@ while read -r id _ entry; do
   case "$entry" in
   "mise exec -- "*)
     tool="$(printf '%s' "${entry#mise exec -- }" | awk '{print $1}')"
-    grep -qE "^${tool} = " "$repo_root/mise.toml" || missing_pin="$missing_pin $tool"
+    # TWO SPELLINGS OF A PIN, because mise has two. A backend-native tool is
+    # keyed by its own name (`shellcheck = "0.10.0"`); a tool that only exists
+    # as an npm package is keyed by the PACKAGE
+    # (`"npm:markdownlint-cli" = "0.41.0"`), while the binary it installs is
+    # `markdownlint`. Matching only the first spelling reported the floor's
+    # markdownlint as unpinned when it is pinned, which would have been fixed
+    # by loosening the hook instead of the check.
+    #
+    # The anchor's copy of this suite knows only the first spelling, correctly:
+    # it pins no npm tool, so the second never arose there. The npm form is
+    # still required to NAME the tool, so this recognises a pin rather than
+    # excusing a missing one.
+    if grep -qE "^${tool} = " "$repo_root/mise.toml" ||
+      grep -qE "^\"npm:[^\"]*${tool}[^\"]*\" = " "$repo_root/mise.toml"; then
+      :
+    else
+      missing_pin="$missing_pin $tool"
+    fi
     ;;
   esac
 done <<EOF
@@ -140,6 +157,26 @@ if printf '%s' "$gate_block" | grep -q 'pass_filenames: false' &&
   printf '%s' "$gate_block" | grep -q 'always_run: true'; then ok; else
   fail_case "check-paired-tests must run always_run with pass_filenames: false"
 fi
+
+# --- 6. NO HOOK IS A NO-OP UNDER --all-files ---------------------------------
+# `pre-commit run --all-files` is what CI runs and what `mise run lint` runs. A
+# hook whose scope is the git INDEX reads nothing in that mode, because nothing
+# is staged in a fresh checkout, and reports success having checked nothing.
+#
+# Measured, not theorised: `gitleaks git --staged` in a clean tree scans
+# "0 commits", prints "no leaks found", and exits 0. It was the gitleaks hook's
+# entry here, so the required `pre-commit` check was reporting green over an
+# unscanned tree.
+#
+# Matched on `--staged` specifically rather than on a general property, because
+# that flag IS the index-scoped mode; a content scan over the filenames
+# pre-commit passes is correct in both modes and needs no exception.
+# Scoped to `entry:` LINES, not the whole file. The config explains this rule in
+# a comment, which names the flag, and matching that made the assertion fail on
+# its own documentation.
+if grep -E '^        entry: ' "$config" | grep -q -- '--staged'; then
+  fail_case "a hook uses --staged, which reads the index and therefore reads NOTHING under --all-files, reporting green over an unscanned tree"
+else ok; fi
 
 echo "RESULT: $pass passed, $fail failed"
 [[ "$fail" -eq 0 ]]
