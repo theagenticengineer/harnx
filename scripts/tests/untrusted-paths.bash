@@ -48,10 +48,18 @@ fi
 # Matched on the FILENAME rather than on a directory, so a file moved back to
 # the workspace is caught by the same assertion that would catch it being
 # renamed there.
-for artefact in diff.txt ai-review-findings.json ai-review-seconds.txt \
-  ai-review-handled.json ai-review-open.json; do
+# The fan-out renamed the per-reviewer outputs, so the list is the current
+# filenames plus the directory they all live under. `ai-review-out` covers the
+# per-reviewer `<slug>.json` and `<slug>.seconds` without this list needing an
+# entry per reviewer, which it could never have.
+for artefact in diff.txt ai-review-out ai-review-handled.json ai-review-open.json \
+  union.json reconciled.json threads.json; do
   offending=""
   while IFS= read -r line; do
+    # A grep that matched nothing yields one empty line, which is not a
+    # reference to anything. Without this the assertion fires for every
+    # artefact the workflow has stopped naming.
+    [ -n "$line" ] || continue
     # Comments describe the rule; they are not what runs.
     case "$line" in
     *"#"*"$artefact"*) continue ;;
@@ -150,6 +158,26 @@ case "$resolved_if" in
 *"workflow_run.conclusion != 'cancelled'"*) ok ;;
 *)
   fail_case "the resolved job must skip a cancelled triggering run, as the context job does. Got: $resolved_if"
+  ;;
+esac
+
+# POSTING MUST NOT DEPEND ON EVERY REVIEWER SUCCEEDING. `needs.review.result`
+# is 'success' only when every matrix leg succeeded, so gating post_findings on
+# it means one reviewer with an expired token costs the contributor every other
+# reviewer's findings. That is the opposite of what `fail-fast: false` is for.
+post_if="$(awk '
+  /^  post_findings:/ { injob = 1; next }
+  /^  [a-z_]+:/        { injob = 0 }
+  injob && /^    if: /  { grab = 1 }
+  grab                  { print; if ($0 ~ /\}\}$/) exit }
+' "$workflow")"
+case "$post_if" in
+*"needs.review.result == 'success'"*)
+  fail_case "post_findings must not require every reviewer to have succeeded; one failing leg would suppress every other reviewer's findings. Got: $post_if"
+  ;;
+*"needs.review.result"*) ok ;;
+*)
+  fail_case "could not read post_findings' condition. Got: ${post_if:-<none>}"
   ;;
 esac
 

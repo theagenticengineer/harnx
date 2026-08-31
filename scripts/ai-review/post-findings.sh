@@ -139,19 +139,16 @@ carry_fallback_note() {
     END { if (found) for (i = found; i <= NR; i++) print lines[i] }'
 }
 
-# Findings are worded by an LLM, so trivial formatting differences (case,
-# punctuation, whitespace) are not guaranteed stable across re-runs of the
-# same underlying issue. Normalizing tolerates that. Deliberately NOT
-# truncated to a fixed word count: an earlier version cut to the first 8
-# words, which let two genuinely DIFFERENT findings that happened to share
-# an opening phrase collapse onto the same key, causing the second one to be
-# silently skipped as "already tracked" instead of posted. The full
-# normalized title is used instead, so an accidental collision between two
-# real, distinct findings would require them to be byte-identical after
-# normalization, not just similarly worded.
-normalize_title() {
-  printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -cs '[:alnum:] ' ' ' | tr -s ' '
-}
+# THE KEY IS DEFINED ONCE, in a sourced fragment, because union.sh has to
+# agree with it exactly. A multi-reviewer fan-out dedups on the same key this
+# script threads on, so two copies of the definition would drift on the first
+# edit to either and the failure would be silent: a pull request quietly
+# growing two threads for one finding, which is the defect criterion 28
+# repaired. See scripts/ai-review/finding-key.sh for what the key is and what
+# it deliberately is not.
+# shellcheck source=scripts/ai-review/finding-key.sh
+# shellcheck disable=SC1091  # sourced at runtime; not followed without -x
+. "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/finding-key.sh"
 
 # A THREE-STEP anchoring cascade, tried in order and stopping at the first
 # one GitHub accepts:
@@ -326,7 +323,7 @@ while read -r finding; do
   # model is where it is removed. This key is then an exact, deterministic
   # idempotence primitive over stable text, which is also what criterion 35's
   # union.sh needs it to be.
-  key="$(printf '%s:%s' "$file" "$(normalize_title "$title")" | sha256sum | cut -d' ' -f1)"
+  key="$(finding_key "$file" "$title")"
 
   if printf '%s\n' "$posted_keys" | grep -Fxq "$key"; then
     continue

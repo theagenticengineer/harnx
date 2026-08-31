@@ -25,9 +25,23 @@ name: ai-review
 # credentialed pipeline stops running. The job below therefore exists to
 # succeed, and nothing downstream consumes anything it produces.
 #
-# It is not permanently empty: the multi-reviewer registry lands its `probe`
-# stage here, which is the right place for it (the probe decides whether the
-# pipeline is armed at all, and needs no credential to do so).
+# IT IS PERMANENTLY EMPTY, BY DESIGN. An earlier version of this note said the
+# multi-reviewer registry's `probe` stage would land here, on the reasoning
+# that the probe needs no credential. That reasoning applied the wrong test.
+# Credential-need was never the criterion; AUTHORSHIP is. The probe decides
+# whether a review happens at all, and a pull request controls this file
+# completely, so a probe here publishing `reviewers: []` would be a
+# self-service mute button on a required check. It is the same shape as the
+# diff substitution that moved extraction to the trunk, and worse: that one
+# reviewed the wrong thing, this one would review nothing.
+#
+# The probe lives in ai-review-trunk.yml, reading `vars.AI_REVIEWERS`, which
+# only a repository admin can write. (`workflow_run` does not carry the
+# triggering run's job outputs anyway, so consuming a probe from here would
+# have needed the very artifact channel that was removed.)
+#
+# So there is nothing left for this file to grow into. Adding work here means
+# adding something the credentialed side would have to trust.
 #
 # It still names no secret, holds no engine token, no App id and no App key,
 # runs no review engine, posts no comment and reports no gate. There is

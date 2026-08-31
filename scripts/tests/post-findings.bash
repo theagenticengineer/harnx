@@ -35,6 +35,24 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 script="$repo_root/scripts/ai-review/post-findings.sh"
 
+# THE KEY IS COMPUTED BY PRODUCTION'S OWN FUNCTION, not re-implemented here.
+# These cases assert dedup and relocation-note survival, both of which are
+# behaviours ABOUT the key rather than claims about how it is derived; what the
+# key must be is finding-key.bash's subject. An earlier version pasted a raw
+# `sha256sum` pipe, which meant a change to the normalisation (the case-folding
+# and punctuation stripping the real function does) would leave this suite
+# green while it silently stopped exercising the paths it names.
+#
+# THIS IS THE COMMIT THAT OWNS THE REPAIR, not the one that wrote the pipe.
+# finding-key.sh does not exist before this commit, so the raw pipe was the
+# only thing the earlier suite could have written; extracting the shared
+# function here and leaving the test with its own copy is what created the
+# divergence. Folding the fix any earlier makes that commit source a file its
+# own tree does not contain.
+# shellcheck source=scripts/ai-review/finding-key.sh
+# shellcheck disable=SC1091  # sourced at runtime; not followed without -x
+. "$repo_root/scripts/ai-review/finding-key.sh"
+
 pass=0
 fail=0
 fail_case() {
@@ -249,7 +267,7 @@ fi
 # --- dedup: a finding already tracked is not posted again -------------------
 # The key is a sha256 of "file:normalized title", so it is computed here the
 # same way the script computes it rather than hardcoded.
-key="$(printf '%s:%s' "scripts/a.sh" "a finding" | sha256sum | cut -d' ' -f1)"
+key="$(finding_key "scripts/a.sh" "a finding")"
 existing="$(jq -cn --arg m "<!-- ai-review-key:$key -->" --arg sev "Major" '
   { pageInfo: { hasNextPage: false, endCursor: null },
     nodes: [ { id: "T_1", isResolved: false,

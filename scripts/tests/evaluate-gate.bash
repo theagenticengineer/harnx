@@ -373,5 +373,71 @@ else
   fail_case "a passing gate must not append remediation text: $(cat "$detail_file")"
 fi
 
+# --- DORMANT IS A PASS, and must be distinguishable from broken --------------
+# When no reviewer is armed the review job never runs, and a SKIPPED review job
+# looks exactly like a FAILED one to the pipeline check: both are "not
+# success". Without the probe's verdict an unarmed repository would carry a
+# permanently red required check it has no way to clear, which is the opposite
+# of what an unarmed floor should do.
+setup 0 "ok" 0 "ok"
+set +e
+env CONFIGURED=false REVIEW_RESULT=skipped POST_RESULT=skipped \
+  GATE_CAUSE_FILE="$cause_file" GATE_DETAIL_FILE="$detail_file" \
+  bash "$work/scripts/evaluate-gate.sh" >"$out" 2>&1
+status=$?
+set -e
+if [ "$status" -eq 0 ]; then
+  pass=$((pass + 1))
+else
+  fail_case "an unarmed repository must PASS dormant, not carry a red gate it cannot clear: $(cat "$out")"
+fi
+if grep -qi 'dormant' "$cause_file"; then
+  pass=$((pass + 1))
+else
+  fail_case "the dormant pass must say it is dormant: $(cat "$cause_file")"
+fi
+# It must NOT read as a broken pipeline, which is the whole distinction.
+if ! grep -q 'did not complete' "$cause_file"; then
+  pass=$((pass + 1))
+else
+  fail_case "dormant must not be reported as a pipeline failure: $(cat "$cause_file")"
+fi
+# And it must say there is nothing for a contributor to do, because arming a
+# reviewer is a repository setting a pull request cannot change.
+if grep -q 'nothing here for a contributor to fix' "$detail_file"; then
+  pass=$((pass + 1))
+else
+  fail_case "the dormant detail must say a contributor cannot fix it"
+fi
+# The sub-checks must not run: with no review there are no threads to judge.
+if [ ! -f "$work/ran-resolved" ] && [ ! -f "$work/ran-dispositions" ]; then
+  pass=$((pass + 1))
+else
+  fail_case "a dormant gate must not run the sub-checks"
+fi
+
+# --- but ARMED and broken is still red ---------------------------------------
+# The dormancy must not become a way to pass a broken pipeline.
+setup 0 "ok" 0 "ok"
+set +e
+env CONFIGURED=true REVIEW_RESULT=failure POST_RESULT=skipped \
+  GATE_CAUSE_FILE="$cause_file" GATE_DETAIL_FILE="$detail_file" \
+  bash "$work/scripts/evaluate-gate.sh" >"$out" 2>&1
+status=$?
+set -e
+if [ "$status" -ne 0 ]; then
+  pass=$((pass + 1))
+else
+  fail_case "an armed pipeline that failed must still be red"
+fi
+# An ABSENT CONFIGURED behaves as armed, so a caller predating the probe is
+# unchanged rather than silently passing everything dormant.
+setup 0 "ok" 0 "ok"
+if [ "$(run_gate failure success)" = "1" ]; then
+  pass=$((pass + 1))
+else
+  fail_case "an absent CONFIGURED must behave as armed"
+fi
+
 echo "RESULT: $pass passed, $fail failed"
 [[ "$fail" -eq 0 ]]

@@ -30,6 +30,11 @@
 # reason; this matches it.
 #
 # Env:
+#   CONFIGURED     optional; the probe's verdict, "true" or "false". When
+#                  "false" no reviewer is armed (or this is a fork's pull
+#                  request), so there is nothing to review and the gate passes
+#                  DORMANT. Absent is treated as "true", so a caller predating
+#                  the probe behaves as it always did.
 #   CONTEXT_RESULT optional; needs.context.result from the workflow. When it is
 #                  anything but "success" the pull request number was never
 #                  resolved, so no sub-check can run and this is the ONLY thing
@@ -131,6 +136,31 @@ emit() {
 #    so running the two checks below would report "no findings" about a review
 #    that never ran, which is the exact fail-open require-diff.sh exists to
 #    prevent one stage earlier.
+# DORMANT IS A PASS, and it has to be distinguishable from broken.
+#
+# When no reviewer is armed the review job never runs, and a skipped review job
+# looks exactly like a failed one to the check below: both are "not success",
+# both would report "the review pipeline did not complete", and an unarmed
+# repository would carry a permanently red required check it has no way to
+# clear. That is the opposite of what an unarmed floor should do.
+#
+# So the probe's verdict is read FIRST. It is computed on the trusted side from
+# repository state, so a pull request cannot set it, and the two states it
+# separates are "nobody asked for a review" and "somebody asked and it broke".
+if [ "${CONFIGURED:-true}" = "false" ]; then
+  cause="ai-review is dormant: no reviewer is armed, so there is nothing to review."
+  {
+    echo "ai-review is DORMANT on this pull request."
+    echo
+    echo "Either the AI_REVIEWERS repository variable names no reviewer, or this pull request comes from a fork, where this repository does not spend its review credentials."
+    echo
+    echo "This is a pass, not a skipped check. Arming a reviewer is a repository setting, not something a pull request can change, so there is nothing here for a contributor to fix."
+  } >"$detail"
+  emit
+  echo "evaluate-gate: $cause"
+  exit 0
+fi
+
 context_result="${CONTEXT_RESULT:-success}"
 if [ "$context_result" != "success" ] ||
   [ "$REVIEW_RESULT" != "success" ] || [ "$POST_RESULT" != "success" ]; then
