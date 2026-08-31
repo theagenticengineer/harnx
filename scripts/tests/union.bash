@@ -39,7 +39,9 @@ setup() {
   mkdir -p "$work/in"
 }
 # $1 reviewer name, rest: compact JSON findings array
-put() { printf '%s' "$2" >"$work/in/$1.json"; }
+# Named <reviewer>.<pass>.json, matching the fan-out: three passes per
+# reviewer, each its own leg and its own artifact.
+put() { printf '%s' "$2" >"$work/in/$1.${3:-code}.json"; }
 
 run() {
   local status

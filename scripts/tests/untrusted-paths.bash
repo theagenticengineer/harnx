@@ -53,12 +53,27 @@ fi
 # per-reviewer `<slug>.json` and `<slug>.seconds` without this list needing an
 # entry per reviewer, which it could never have.
 for artefact in diff.txt ai-review-out ai-review-handled.json ai-review-open.json \
-  union.json reconciled.json threads.json; do
+  ai-review-subject.txt union.json reconciled.json threads.json; do
+  # EVERY ARTEFACT MUST BE REFERENCED AT LEAST ONCE, and this is not tidiness.
+  # Skipping an artefact the workflow no longer names made the whole check
+  # vacuous: zero matches meant the loop never ran, `offending` stayed empty,
+  # and the assertion reported ok. An artefact renamed out of the workflow, or
+  # moved into the workspace under a new name, would then pass silently, which
+  # is exactly what this suite exists to catch.
+  #
+  # So a list entry that matches nothing is a failure too. It means either the
+  # workflow stopped using it, in which case the list is stale and must be
+  # updated deliberately, or it was renamed, in which case the new name needs
+  # the same guard.
+  refs="$(grep -c -- "$artefact" "$workflow" || true)"
+  if [ "${refs:-0}" -eq 0 ]; then
+    fail_case "$artefact is not referenced in the workflow at all, so the check for it passes vacuously. Update this list, or restore the reference."
+    continue
+  fi
+  ok
+
   offending=""
   while IFS= read -r line; do
-    # A grep that matched nothing yields one empty line, which is not a
-    # reference to anything. Without this the assertion fires for every
-    # artefact the workflow has stopped naming.
     [ -n "$line" ] || continue
     # Comments describe the rule; they are not what runs.
     case "$line" in

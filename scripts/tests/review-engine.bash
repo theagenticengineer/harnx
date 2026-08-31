@@ -380,6 +380,7 @@ done
 # model saw a truncated tail: a review of PART of a pull request reported as a
 # review of all of it. That is the same fail-open shape as an empty diff
 # reporting no findings, and it is invisible from the outside.
+printf 'a description under review\n' >"$stub_dir/psub.txt"
 big_diff="$stub_dir/big.txt"
 {
   for f in a b c; do
@@ -491,6 +492,14 @@ fi
 # does not report a missing definition that lives in another chunk.
 if grep -q 'ONE PART of a larger diff' "$prompt"; then ok; else
   fail_case "the prompt must say a chunk may be part of a larger diff"
+fi
+# And it must say that ONLY to the pass that chunks. A drift pass receives a
+# complete summary, so telling it the input might be partial invites it to
+# excuse a description that names a file the summary does not list.
+run CLAUDE_STUB_RESULT='[]' AI_REVIEW_PASS=pr-body AI_REVIEW_SUBJECT="$stub_dir/psub.txt" \
+  AI_REVIEW_DIFF_FILE="$big_diff" 2>/dev/null || true
+if [ -s "$prompt" ] && ! grep -q 'ONE PART of a larger diff' "$prompt"; then ok; else
+  fail_case "a drift pass must not be told its input may be partial"
 fi
 
 # A non-empty payload with no `diff --git` header at all is reviewed as one
@@ -652,6 +661,182 @@ if run CLAUDE_STUB_SEQ="$seq_file" AI_REVIEW_MAX_ATTEMPTS=3; then
 else ok; fi
 if [ "$(calls_made)" = "1" ]; then ok; else
   fail_case "an is_error response must not be retried, got $(calls_made) calls"
+fi
+
+# --- THREE PASSES, one seam --------------------------------------------------
+# `code` reviews the diff for defects. `issue-body` and `pr-body` review a
+# DESCRIPTION against what was delivered, so description drift becomes an
+# ordinary finding: it opens a thread and blocks the gate like any other, with
+# no separate protocol for answering it.
+subject="$stub_dir/subject.txt"
+printf 'This pull request rewrites c.py entirely.\n' >"$subject"
+
+# An unrecognised pass is REFUSED, not defaulted. Quietly reviewing the code
+# when somebody asked for a drift check reports a pass nobody requested.
+if run CLAUDE_STUB_RESULT='[]' AI_REVIEW_PASS=nonsense; then
+  fail_case "an unrecognised pass must be refused, not defaulted to code"
+else ok; fi
+if grep -q "AI_REVIEW_PASS must be" "$log"; then ok; else
+  fail_case "the refusal must name the legal passes: $(cat "$log")"
+fi
+# The default is `code`, so every existing caller is unchanged.
+run CLAUDE_STUB_RESULT='[]' || true
+if grep -q 'strict code reviewer' "$prompt"; then ok; else
+  fail_case "the default pass must be the code review"
+fi
+
+# A drift pass has nothing to review without its description, and reporting
+# that a description matches when it was never read is the fail-open here.
+if run CLAUDE_STUB_RESULT='[]' AI_REVIEW_PASS=pr-body; then
+  fail_case "a drift pass with no subject must fail"
+else ok; fi
+if run CLAUDE_STUB_RESULT='[]' AI_REVIEW_PASS=pr-body AI_REVIEW_SUBJECT="$stub_dir/absent.txt"; then
+  fail_case "a drift pass whose subject file is missing must fail"
+else ok; fi
+if grep -q 'never read' "$log"; then ok; else
+  fail_case "the missing-subject failure must say what it refused: $(cat "$log")"
+fi
+
+# --- each pass asks a DIFFERENT question --------------------------------------
+run CLAUDE_STUB_RESULT='[]' AI_REVIEW_PASS=issue-body AI_REVIEW_SUBJECT="$subject" || true
+if grep -q 'linked ISSUE DESCRIPTION' "$prompt" && ! grep -q 'strict code reviewer' "$prompt"; then ok; else
+  fail_case "the issue-body pass must ask about the issue, not review the code"
+fi
+# The finding must be actionable against the DESCRIPTION, or a drift finding
+# reads as a code finding and gets answered by changing the wrong thing.
+if grep -q 'WHAT TO CHANGE IN THE ISSUE BODY' "$prompt"; then ok; else
+  fail_case "the issue-body pass must ask for a change to the issue body"
+fi
+run CLAUDE_STUB_RESULT='[]' AI_REVIEW_PASS=pr-body AI_REVIEW_SUBJECT="$subject" || true
+if grep -q 'PULL REQUEST DESCRIPTION' "$prompt" && grep -q 'WHAT TO CHANGE IN THE DESCRIPTION' "$prompt"; then ok; else
+  fail_case "the pr-body pass must ask about the pull request description"
+fi
+
+# --- the description is fenced with the run's nonce ---------------------------
+# It is untrusted for the same reason the diff is: a pull request's body is
+# written by its author, and an issue's body by whoever edited it last.
+if grep -qE 'BEGIN DESCRIPTION [0-9a-f]+' "$prompt" &&
+  grep -qE 'END DESCRIPTION [0-9a-f]+' "$prompt"; then ok; else
+  fail_case "the description must be fenced with the run's nonce"
+fi
+if grep -q 'This pull request rewrites c.py entirely.' "$prompt"; then ok; else
+  fail_case "the description must actually reach the prompt"
+fi
+# The code pass has no description and must not carry the fence.
+run CLAUDE_STUB_RESULT='[]' || true
+if ! grep -q 'BEGIN DESCRIPTION' "$prompt"; then ok; else
+  fail_case "the code pass must not carry a description fence"
+fi
+
+# --- A DRIFT PASS DOES NOT CHUNK ----------------------------------------------
+# Its question is global: no single chunk contains enough to judge whether a
+# description matches what was delivered. Sending the diff whole instead would
+# reintroduce the silent truncation chunking exists to prevent, so it gets a
+# summary that cannot be truncated.
+run CLAUDE_STUB_RESULT='[]' AI_REVIEW_DIFF_FILE="$big_diff" AI_REVIEW_MAX_DIFF_BYTES=500 \
+  AI_REVIEW_PASS=pr-body AI_REVIEW_SUBJECT="$subject" || true
+if [ "$(calls_made)" = "1" ]; then ok; else
+  fail_case "a drift pass must be one call whatever the diff size, got $(calls_made)"
+fi
+# The same diff chunks into three for the code pass, which is what proves the
+# single call is the pass's doing and not the fixture's.
+run CLAUDE_STUB_RESULT='[]' AI_REVIEW_DIFF_FILE="$big_diff" AI_REVIEW_MAX_DIFF_BYTES=500 || true
+if [ "$(calls_made)" = "3" ]; then ok; else
+  fail_case "the same diff must still chunk for the code pass, got $(calls_made)"
+fi
+
+# --- what a drift pass sees is a SUMMARY, not the diff ------------------------
+summary_diff="$stub_dir/summary.txt"
+{
+  printf 'diff --git a/a.sh b/a.sh\n--- a/a.sh\n+++ b/a.sh\n@@\n+one\n+two\n-gone\n'
+  printf 'diff --git a/b.md b/b.md\n--- a/b.md\n+++ b/b.md\n@@\n+doc\n'
+} >"$summary_diff"
+run CLAUDE_STUB_RESULT='[]' AI_REVIEW_DIFF_FILE="$summary_diff" \
+  AI_REVIEW_PASS=pr-body AI_REVIEW_SUBJECT="$subject" || true
+if grep -q '^a.sh: +2 -1$' "$prompt" && grep -q '^b.md: +1 -0$' "$prompt"; then ok; else
+  fail_case "a drift pass must see one line per file with its counts"
+fi
+# A PATH WITH A SPACE IN IT. `diff --git a/x b/x` splits on whitespace, so
+# taking field three gives the path only when the path has no space. Git does
+# not quote a plain space, so `a/some file.md` became `a/some`: the summary
+# then named a file that does not exist while the real one went unmentioned,
+# and a drift pass would report the description as wrong about both.
+spaced_diff="$stub_dir/spaced.txt"
+{
+  printf 'diff --git a/plain.sh b/plain.sh\n--- a/plain.sh\n+++ b/plain.sh\n@@\n+x\n'
+  printf 'diff --git a/docs/a file with spaces.md b/docs/a file with spaces.md\n'
+  printf -- '--- a/docs/a file with spaces.md\n+++ b/docs/a file with spaces.md\n@@\n+y\n+z\n-w\n'
+} >"$spaced_diff"
+run CLAUDE_STUB_RESULT='[]' AI_REVIEW_DIFF_FILE="$spaced_diff" \
+  AI_REVIEW_PASS=pr-body AI_REVIEW_SUBJECT="$subject" || true
+if grep -qF 'docs/a file with spaces.md: +2 -1' "$prompt"; then ok; else
+  fail_case "a path containing a space must survive into the summary intact"
+fi
+if ! grep -qE '^docs/a: ' "$prompt"; then ok; else
+  fail_case "a path must not be truncated at its first space"
+fi
+if grep -qF 'plain.sh: +1 -0' "$prompt"; then ok; else
+  fail_case "an ordinary path must still be counted alongside it"
+fi
+
+# CONTENT THAT LOOKS LIKE A FILE HEADER. The header block used to be skipped
+# by matching `+++ ` and `--- `, which also matches real content: an added
+# line whose text begins with `++ ` renders as `+++ `, and a removed line
+# beginning with `-- ` renders as `--- `. Both were dropped from the counts, so
+# the summary understated the file and a drift pass could call a truthful
+# description wrong. This repository's own docs quote diffs, so the fixture is
+# not hypothetical. The header block is now skipped positionally, from the
+# `diff --git` line to that file's first `@@`.
+lookalike_diff="$stub_dir/lookalike.txt"
+{
+  printf 'diff --git a/quote.md b/quote.md\n--- a/quote.md\n+++ b/quote.md\n@@\n'
+  printf '+++ this added line begins with two plus signs\n+ordinary added\n'
+  printf -- '--- this removed line begins with two hyphens\n-ordinary removed\n'
+} >"$lookalike_diff"
+run CLAUDE_STUB_RESULT='[]' AI_REVIEW_DIFF_FILE="$lookalike_diff" \
+  AI_REVIEW_PASS=pr-body AI_REVIEW_SUBJECT="$subject" || true
+if grep -qF 'quote.md: +2 -2' "$prompt"; then ok; else
+  fail_case "content lines that look like diff headers must still be counted: $(grep -F 'quote.md' "$prompt" || echo 'no line for quote.md')"
+fi
+# The real headers must NOT be counted, which the line above already proves:
+# counting them would have given +3 -3.
+
+# A FILE WITH NO HUNK AT ALL (a mode change, a binary file) contributes no
+# counts rather than swallowing the next file's lines. Without the reset at
+# each `diff --git`, the skip state from such an entry would run on.
+modeonly_diff="$stub_dir/modeonly.txt"
+{
+  printf 'diff --git a/tool.sh b/tool.sh\nold mode 100644\nnew mode 100755\n'
+  printf 'diff --git a/after.md b/after.md\n--- a/after.md\n+++ b/after.md\n@@\n+kept\n'
+} >"$modeonly_diff"
+run CLAUDE_STUB_RESULT='[]' AI_REVIEW_DIFF_FILE="$modeonly_diff" \
+  AI_REVIEW_PASS=pr-body AI_REVIEW_SUBJECT="$subject" || true
+if grep -qF 'tool.sh: +0 -0' "$prompt"; then ok; else
+  fail_case "a mode-only entry must be named with zero counts"
+fi
+if grep -qF 'after.md: +1 -0' "$prompt"; then ok; else
+  fail_case "the file after a mode-only entry must still be counted"
+fi
+
+# The content of the change must NOT be there: that is what makes the summary
+# untruncatable, and it is not what a drift review needs.
+if ! grep -q '^+one$' "$prompt"; then ok; else
+  fail_case "a drift pass must not receive the diff's content, only its shape"
+fi
+# The code pass still gets the real diff, so the summary is the drift passes'
+# doing rather than a change to the engine's input.
+run CLAUDE_STUB_RESULT='[]' AI_REVIEW_DIFF_FILE="$summary_diff" || true
+if grep -q '^+one$' "$prompt"; then ok; else
+  fail_case "the code pass must still receive the full diff"
+fi
+
+# --- the output contract is the same whatever the pass ------------------------
+# A drift finding flows through the same union, the same threads and the same
+# gate as a code finding, so it has to have the same shape.
+run AI_REVIEW_PASS=pr-body AI_REVIEW_SUBJECT="$subject" \
+  CLAUDE_STUB_RESULT='[{"file":"README.md","line":4,"title":"the description claims c.py","severity":"Minor"}]' || true
+if jq -e '.[0] | has("file") and has("line") and has("side") and has("severity") and has("reviewer")' "$out" >/dev/null; then ok; else
+  fail_case "a drift finding must carry the same fields as a code finding"
 fi
 
 echo "RESULT: $pass passed, $fail failed"

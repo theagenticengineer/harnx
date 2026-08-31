@@ -82,10 +82,18 @@ fi
 # diff stopped travelling as one; re-adding it to the job that publishes the
 # required check, to re-read data another job already holds, is the wrong trade.
 if [ -n "${EXPECTED_REVIEWERS:-}" ]; then
+  # A reviewer's files are named <slug>.<pass>.json, one per pass, so the test
+  # is "did this reviewer produce ANY output" rather than "is there a file with
+  # exactly this name". A reviewer whose every pass failed produced none.
   missing=""
   while read -r slug; do
     [ -n "$slug" ] || continue
-    [ -f "$UNION_INPUTS/$slug.json" ] || missing="$missing $slug"
+    # An ARRAY and its length, not `set --` with `[ -e "$1" ]`: nullglob is on,
+    # so an unmatched pattern expands to nothing at all, and `$1` is then
+    # unbound under `set -u`. `${#arr[@]}` is safe on an empty array; `$1` and
+    # `${arr[0]}` are not.
+    produced=("$UNION_INPUTS/$slug".*.json)
+    [ "${#produced[@]}" -gt 0 ] || missing="$missing $slug"
   done <<EOF
 $(printf '%s' "$EXPECTED_REVIEWERS" | jq -r '.[]?' 2>/dev/null || true)
 EOF

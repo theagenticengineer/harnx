@@ -245,15 +245,47 @@ else
 fi
 
 # --- broken invocations --------------------------------------------------------
+# The cause and detail files are passed exactly as every other case passes
+# them, so a non-zero exit here means the missing variable was refused rather
+# than something unrelated failing; and the message is asserted, so the case
+# cannot pass for the wrong reason.
 setup 0 "clean" 0 "clean"
 set +e
-env -u REVIEW_RESULT POST_RESULT=success bash "$work/scripts/evaluate-gate.sh" >"$out" 2>&1
+env -u REVIEW_RESULT POST_RESULT=success \
+  GATE_CAUSE_FILE="$cause_file" GATE_DETAIL_FILE="$detail_file" \
+  bash "$work/scripts/evaluate-gate.sh" >"$out" 2>&1
 st=$?
 set -e
 if [[ "$st" -ne 0 ]]; then
   pass=$((pass + 1))
 else
   fail_case "a missing REVIEW_RESULT must be refused, not treated as success"
+fi
+if grep -q 'REVIEW_RESULT' "$out"; then
+  pass=$((pass + 1))
+else
+  fail_case "the refusal must name the variable it is missing: $(cat "$out")"
+fi
+# The sub-checks must not have run: with no pipeline result there is nothing to
+# judge, and running them would report on a review whose state is unknown.
+if [ ! -f "$work/ran-resolved" ]; then
+  pass=$((pass + 1))
+else
+  fail_case "a broken invocation must be refused before the sub-checks run"
+fi
+# POST_RESULT gets the same treatment, so neither is refused only by accident
+# of being checked first.
+setup 0 "clean" 0 "clean"
+set +e
+env -u POST_RESULT REVIEW_RESULT=success \
+  GATE_CAUSE_FILE="$cause_file" GATE_DETAIL_FILE="$detail_file" \
+  bash "$work/scripts/evaluate-gate.sh" >"$out" 2>&1
+st=$?
+set -e
+if [[ "$st" -ne 0 ]] && grep -q 'POST_RESULT' "$out"; then
+  pass=$((pass + 1))
+else
+  fail_case "a missing POST_RESULT must be refused by name: $(cat "$out")"
 fi
 
 # --- a sub-check that CRASHED is not a finding backlog ------------------------

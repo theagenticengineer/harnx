@@ -27,6 +27,10 @@
 #   HEAD_SHA   required; the PR head commit SHA (comments anchor to it).
 #   FINDINGS   required; path to the findings JSON array
 #              ({file, line, side, title, severity, reviewer}).
+#   ANCHOR_FALLBACK  optional; a path that IS part of this pull request's diff.
+#              A finding about a file the diff does not touch cannot be
+#              anchored anywhere, and drift findings are legitimately about
+#              exactly that. See the fourth cascade step.
 #
 # EVERY API BODY IS SENT FROM A FILE, via `gh api --input`, never assembled
 # from `-f body=` flags. Two reasons, both of them defects this replaced:
@@ -128,13 +132,20 @@ update_comment() {
 # finding erased it and left a thread anchored at line 1 claiming to be about
 # line 1. This lifts the note off the old body and carries it forward.
 #
-# Matched on the parenthesised sentence the cascade writes, anchored to the
+# Matched on the parenthesised sentences the cascade writes, anchored to the
 # end of the body, so ordinary text that happens to contain a bracket is not
 # mistaken for one.
+#
+# ALL THREE of them, including step 4's. That one was missed when step 4 was
+# added, and the effect was worse than losing a sentence: the freshly built
+# body never carries the note, so it always differed from the stored one, so
+# EVERY re-review updated the comment and stripped the note again. A thread
+# anchored to one file and actually about another then lost the only sentence
+# saying so.
 carry_fallback_note() {
   local old_body="$1"
   printf '%s' "$old_body" | awk '
-    /^\((originally reported at line |reported at line )/ { found = NR }
+    /^\((originally reported at line |reported at line |This finding is about )/ { found = NR }
     { lines[NR] = $0 }
     END { if (found) for (i = found; i <= NR; i++) print lines[i] }'
 }
@@ -160,8 +171,28 @@ carry_fallback_note() {
 #      GitHub anchors that to the file as a whole and needs no hunk at all,
 #      which is what makes a finding on a line this pull request never
 #      touched postable.
+#   4. a DIFFERENT file, one the diff does touch, with the real subject named
+#      in the body. Steps 1 to 3 all require the file to be part of this pull
+#      request's diff; GitHub rejects a review comment on any other path with
+#      a 422, however it is anchored.
 #
-# Step 3 is not defensive padding; it closes a failure that actually
+# STEP 4 IS NOT DEFENSIVE PADDING EITHER, and it closes a failure the
+# description-drift passes create by design. A drift finding says "the issue
+# claims work on AGENTS.md and the diff never touches it". Its subject is a
+# file that is, necessarily, absent from the diff. All three steps above then
+# fail with a 422, and the whole job goes red over a finding that is not only
+# valid but is the most useful thing a drift pass can say.
+#
+# Measured on this pull request: the issue-body pass correctly reported that a
+# ticked acceptance criterion claimed a file the diff never touches, and the
+# posting failed on exactly that.
+#
+# So the finding lands on a file the diff DOES contain, carrying a sentence
+# saying which file it is really about. That is worse than anchoring it
+# correctly and far better than dropping it: it stays a resolvable thread, so
+# it still blocks the gate and still needs a written disposition.
+#
+# Step 3 is not defensive padding either; it closes a failure that actually
 # happened. A finding already reported at line 1 skips step 2 (retrying the
 # identical anchor would only fail identically), so before step 3 existed a
 # single rejected attempt made the whole ai-review job red, which in turn
@@ -227,6 +258,20 @@ post_comment() {
     return 0
   fi
   why="$why | subject_type=file: $(tr '\n' ' ' <"$err")"
+
+  # STEP 4. Every anchor above needs `$file` to be part of this pull request's
+  # diff, and a description-drift finding is often about a file that is not,
+  # which is the whole point of it. Land it on a file the diff does contain,
+  # saying plainly which file it is really about.
+  if [ -n "${ANCHOR_FALLBACK:-}" ] && [ "$ANCHOR_FALLBACK" != "$file" ]; then
+    local elsewhere_body="$body
+
+(This finding is about \`$file\`, which is not part of this pull request's diff, so it cannot be anchored there. It is posted here only so it remains a resolvable thread. Answer it as you would any other finding.)"
+    if file_comment "$ANCHOR_FALLBACK" "$elsewhere_body"; then
+      return 0
+    fi
+    why="$why | fallback $ANCHOR_FALLBACK: $(tr '\n' ' ' <"$err")"
+  fi
 
   echo "::error::every anchoring attempt for $file failed. $why" >&2
   return 1

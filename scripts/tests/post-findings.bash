@@ -124,6 +124,14 @@ if [ -z "$payload" ] || [ ! -f "$payload" ]; then
   echo "gh: the stub received a comment post with no --input payload" >&2
   exit 1
 fi
+# GH_STUB_ONLY_PATH mimics GitHub's real behaviour for a file the pull request
+# does not touch: every anchor on it is a 422, however it is anchored.
+if [ -n "${GH_STUB_ONLY_PATH:-}" ] &&
+  [ "$(jq -r '.path // empty' "$payload")" != "$GH_STUB_ONLY_PATH" ]; then
+  printf 'rejected\n' >>"$GH_STUB_ATTEMPTS"
+  echo "gh: Validation Failed (HTTP 422) for a path outside the diff" >&2
+  exit 1
+fi
 if [ "$(jq -r '.subject_type // empty' "$payload")" = "file" ]; then
   anchor=file
 elif [ "$(jq -r '.line // empty' "$payload")" = "1" ] &&
@@ -346,6 +354,106 @@ for raw in '7' 'null' '{"a":1}' '["Major"]'; do
     fail_case "severity $raw must fail closed to Major: $(cat "$payloads")"
   fi
 done
+
+# --- STEP 4: a finding about a file the diff does not touch ------------------
+# Every anchor above needs the file to be part of this pull request's diff, and
+# GitHub rejects a review comment on any other path with a 422 however it is
+# anchored. A description-drift finding is often about exactly such a file
+# ("the issue claims work on AGENTS.md and the diff never touches it"), which
+# is the most useful thing a drift pass can say. Measured on this pull request:
+# the issue-body pass reported precisely that, and the posting failed on it,
+# taking the whole job red.
+# `${3-default}`, without the colon: an explicitly EMPTY fallback must mean
+# "none configured", and `${3:-default}` would substitute the default for it,
+# testing the opposite of what the case is named for.
+setup_fallback() {
+  jq -cn '[{file: "AGENTS.md", line: 1, side: "RIGHT", title: "the issue claims a file the diff never touches", severity: "Major"}]' >"$findings"
+  : >"$attempts"
+  : >"$args_log"
+  : >"$payloads"
+  env PATH="$stub_dir:$PATH" \
+    GH_STUB_ATTEMPTS="$attempts" GH_STUB_ARGS="$args_log" \
+    GH_STUB_PAYLOADS="$payloads" GH_STUB_ALLOW="$1" GH_STUB_THREADS="" \
+    GH_STUB_ONLY_PATH="${2:-}" \
+    GH_TOKEN=t OWNER=o REPO_NAME=r PR_NUMBER=1 HEAD_SHA=deadbeef \
+    ANCHOR_FALLBACK="${3-scripts/in-the-diff.sh}" \
+    FINDINGS="$findings" bash "$script" >"$out" 2>&1
+}
+
+# GitHub accepts nothing for AGENTS.md and everything for the fallback path,
+# which is what the 422 actually looks like.
+if setup_fallback "line line1 file" "scripts/in-the-diff.sh"; then pass=$((pass + 1)); else
+  fail_case "a finding about a file outside the diff must still be posted: $(cat "$out")"
+fi
+# It must say which file it is really about, or the thread is unanswerable.
+if grep -qF 'AGENTS.md' "$payloads"; then pass=$((pass + 1)); else
+  fail_case "the relocated finding must name the file it is about: $(cat "$payloads")"
+fi
+if grep -qF 'not part of this pull request' "$payloads"; then pass=$((pass + 1)); else
+  fail_case "the relocated finding must explain why it is posted elsewhere"
+fi
+# It stays a resolvable thread, which is what keeps it blocking.
+if grep -qF '"subject_type":"file"' "$payloads" || grep -qF '"subject_type": "file"' "$payloads"; then
+  pass=$((pass + 1))
+else
+  fail_case "the fallback must post as a file-level review comment, not an issue comment"
+fi
+# Without a fallback the behaviour is unchanged: it still fails loudly rather
+# than inventing somewhere to put it.
+if setup_fallback "line line1 file" "scripts/in-the-diff.sh" ""; then
+  fail_case "with no fallback configured, an unpostable finding must still fail"
+else
+  pass=$((pass + 1))
+fi
+# And the fallback is a LAST resort: a finding whose own file works must not be
+# relocated.
+jq -cn '[{file: "scripts/a.sh", line: 12, side: "RIGHT", title: "ordinary", severity: "Major"}]' >"$findings"
+: >"$attempts"
+: >"$payloads"
+env PATH="$stub_dir:$PATH" GH_STUB_ATTEMPTS="$attempts" GH_STUB_ARGS="$args_log" \
+  GH_STUB_PAYLOADS="$payloads" GH_STUB_ALLOW="line" GH_STUB_THREADS="" \
+  GH_TOKEN=t OWNER=o REPO_NAME=r PR_NUMBER=1 HEAD_SHA=deadbeef \
+  ANCHOR_FALLBACK="scripts/in-the-diff.sh" FINDINGS="$findings" bash "$script" >"$out" 2>&1 || true
+if ! grep -qF 'in-the-diff.sh' "$payloads"; then pass=$((pass + 1)); else
+  fail_case "a finding that anchors normally must not be relocated"
+fi
+
+# --- the step 4 note survives a re-review ------------------------------------
+# The relocated note is the only sentence saying the thread is about a
+# different file than the one it is anchored to. It was missed when step 4 was
+# added, and the effect was worse than losing it once: the freshly built body
+# never carries the note, so it always differed from the stored one, so every
+# re-review updated the comment and stripped it again.
+relocated_key="$(finding_key "AGENTS.md" "the issue claims a file the diff never touches")"
+relocated_body="<!-- ai-review-key:$relocated_key -->
+<!-- ai-review-severity:Major -->
+**[Major]** the issue claims a file the diff never touches
+
+(This finding is about \`AGENTS.md\`, which is not part of this pull request's diff, so it cannot be anchored there. It is posted here only so it remains a resolvable thread. Answer it as you would any other finding.)"
+existing_relocated="$(jq -cn --arg b "$relocated_body" '
+  { pageInfo: { hasNextPage: false, endCursor: null },
+    nodes: [ { id: "T_R", isResolved: false,
+               comments: { nodes: [ { databaseId: 9, body: $b } ] } } ] }')"
+
+jq -cn '[{file: "AGENTS.md", line: 1, side: "RIGHT", title: "the issue claims a file the diff never touches", severity: "Major"}]' >"$findings"
+: >"$attempts"
+: >"$payloads"
+env PATH="$stub_dir:$PATH" GH_STUB_ATTEMPTS="$attempts" GH_STUB_ARGS="$args_log" \
+  GH_STUB_PAYLOADS="$payloads" GH_STUB_ALLOW="line line1 file" \
+  GH_STUB_THREADS="$existing_relocated" \
+  GH_TOKEN=t OWNER=o REPO_NAME=r PR_NUMBER=1 HEAD_SHA=deadbeef \
+  ANCHOR_FALLBACK="scripts/in-the-diff.sh" FINDINGS="$findings" bash "$script" >"$out" 2>&1 || true
+# Unchanged content plus a carried note means nothing to update at all.
+if [ ! -s "$payloads" ]; then
+  pass=$((pass + 1))
+else
+  fail_case "an unchanged relocated finding must not be rewritten on every pass: $(cat "$payloads")"
+fi
+if [ ! -s "$attempts" ]; then
+  pass=$((pass + 1))
+else
+  fail_case "an already-threaded relocated finding must not be posted again"
+fi
 
 echo "RESULT: $pass passed, $fail failed"
 [[ "$fail" -eq 0 ]]
