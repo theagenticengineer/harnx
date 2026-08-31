@@ -133,7 +133,10 @@ fi
 # check's own output has no guaranteed length. A failed publish would leave
 # the required context unreported and block the pull request on nothing.
 run CONCLUSION=failure SUMMARY="$(printf 'x%.0s' $(seq 1 400))" >"$out" 2>&1
-title_len="$(jq -r '.output.title | length' "$captured")"
+# `|| true` on each length read: the payload is empty exactly when the script
+# under test failed to send one, which is the regression these assertions catch,
+# and an unguarded jq failure would abort the suite instead of reporting it.
+title_len="$(jq -r '.output.title | length' "$captured" || true)"
 if [ "$title_len" -le 255 ]; then
   pass=$((pass + 1))
 else
@@ -177,7 +180,7 @@ fi
 # which is measurably slow at this size.
 huge="$(head -c 70000 /dev/zero | tr '\0' 'x')"
 run CONCLUSION=failure SUMMARY="$huge" >"$out" 2>&1
-summary_len="$(jq -r '.output.summary | length' "$captured")"
+summary_len="$(jq -r '.output.summary | length' "$captured" || true)"
 if [ "$summary_len" -le 65535 ]; then
   pass=$((pass + 1))
 else
@@ -191,7 +194,7 @@ else
   fail_case "a clamped summary must say that it was clamped"
 fi
 run CONCLUSION=failure SUMMARY="a cause" TEXT="$huge" >"$out" 2>&1
-text_len="$(jq -r '.output.text | length' "$captured")"
+text_len="$(jq -r '.output.text | length' "$captured" || true)"
 if [ "$text_len" -le 65535 ]; then
   pass=$((pass + 1))
 else

@@ -109,7 +109,19 @@ jobs:
       ${{ !cancelled() && needs.context.result == 'success'
       && github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # SIZED FOR CHUNKING, not for one call. review-engine.sh splits a large
+    # diff on file boundaries and reviews each chunk, so the wall clock is
+    # roughly the chunk count times one call. Measured: a two-chunk review took
+    # 488 seconds, and at the previous ten-minute budget the next push overran
+    # and was CANCELLED, which the gate then reports as "the review pipeline did
+    # not complete" with no way to tell a dead token from a large diff.
+    #
+    # This is a BACKSTOP for something genuinely stuck. The thing that actually
+    # bounds the work is AI_REVIEW_MAX_CHUNKS in the engine, which refuses an
+    # unreviewably large diff by name rather than starting it and being killed.
+    # The two are a pair: raising one without the other reintroduces the
+    # cancellation.
+    timeout-minutes: 30
     # Where the engine token comes from. The value is released only because
     # this job's ref is the default branch, which is on the environment's
     # deployment branch policy.

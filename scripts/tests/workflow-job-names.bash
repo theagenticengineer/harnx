@@ -41,12 +41,46 @@ trap 'rm -rf "$tmp"' EXIT
 # that one line and sourcing the rest gives the real function, which is the
 # whole point: re-listing the checks here would be a second copy free to drift
 # from the one that is actually applied.
+#
+# THE STRIP IS VERIFIED, not assumed, and this is the part that matters. If a
+# refactor ever changes that last line, the sed matches nothing, the source
+# runs main() for real, and an ordinary `mise run test` starts writing branch
+# protection through the live API. The `|| true` on the read below would then
+# hide the resulting error rather than surface it. So the invocation must be
+# gone, asserted before anything is sourced.
 sed '/^main "\$@"$/d' "$repo_root/scripts/configure-protection.sh" >"$tmp/checks.sh"
-required="$(bash -c ". '$tmp/checks.sh'; floor_required_checks")"
+if grep -qE '^[[:space:]]*main[[:space:]]' "$tmp/checks.sh"; then
+  fail_case "configure-protection.sh still invokes main after the strip; sourcing it would run the real script against the live API. Update the sed pattern before this suite is trusted again."
+else
+  pass=$((pass + 1))
+fi
+
+# BELT AND BRACES: a stub PATH for the source, so even a strip that somehow
+# let an invocation through cannot reach GitHub. The script's every side
+# effect goes through `gh`, and the stub exits non-zero, so a leaked main()
+# fails loudly here instead of mutating a repository.
+mkdir -p "$tmp/bin"
+cat >"$tmp/bin/gh" <<'STUB'
+#!/usr/bin/env bash
+echo "workflow-job-names.bash: the sourced configure-protection.sh tried to call gh; the strip of main() failed." >&2
+exit 1
+STUB
+chmod +x "$tmp/bin/gh"
+
+# `|| true`: an unguarded assignment aborts the suite under `set -e` before
+# the diagnostic below can run, swallowing the very error it exists to report.
+required="$(PATH="$tmp/bin:$PATH" bash -c ". '$tmp/checks.sh'; floor_required_checks" 2>"$tmp/src.err" || true)"
 if [ -n "$required" ]; then
   pass=$((pass + 1))
 else
-  fail_case "could not read floor_required_checks out of configure-protection.sh"
+  fail_case "could not read floor_required_checks out of configure-protection.sh: $(cat "$tmp/src.err" 2>/dev/null)"
+fi
+# Sourcing must be SILENT. Anything on stderr means the file did something
+# beyond defining functions, which is exactly what this guard exists to catch.
+if [ ! -s "$tmp/src.err" ]; then
+  pass=$((pass + 1))
+else
+  fail_case "sourcing configure-protection.sh produced output, so it did more than define functions: $(cat "$tmp/src.err")"
 fi
 
 # A workflow is in scope when its `on:` block names workflow_run.

@@ -90,6 +90,34 @@ if grep -q 'extract-diff.sh' "$workflow"; then ok; else
   fail_case "the trunk must compute the reviewed diff itself"
 fi
 
+# THE JOB BUDGET AND THE CHUNK LIMIT ARE A PAIR. Chunking multiplies the
+# engine's wall clock by the chunk count; a job timeout sized for one call gets
+# the run CANCELLED, and the gate then reports "the review pipeline did not
+# complete", which is indistinguishable from a dead token. Raising either one
+# alone reintroduces that, so the workflow is pinned to a budget that fits the
+# engine's own limit.
+# Scoped to the REVIEW JOB, by the same awk walk the resolved-job check uses.
+# Unscoped it passed if ANY job anywhere in the file happened to carry a
+# timeout in range, so the review job could keep a one-call budget while the
+# assertion reported green. That is the same vacuity as the resolved-job check
+# before it was scoped, in the same file, and it is worth naming: an assertion
+# about "the workflow" is almost never the assertion you meant.
+review_timeout="$(awk '
+  /^  review:/    { injob = 1; next }
+  /^  [a-z_]+:/   { injob = 0 }
+  injob && /^    timeout-minutes: / { print $2; exit }
+' "$workflow")"
+case "$review_timeout" in
+'' | *[!0-9]*)
+  fail_case "could not read the review job's timeout-minutes"
+  ;;
+*)
+  if [ "$review_timeout" -ge 20 ]; then ok; else
+    fail_case "the review job's timeout is ${review_timeout}m, too short for a chunked review; a one-call budget gets a large diff cancelled and the gate then reports a broken pipeline"
+  fi
+  ;;
+esac
+
 # THE GATE JOB MUST NOT DEPEND ON THE CONTEXT JOB SUCCEEDING. ai-review-resolved
 # is a required context, so a gate job that is skipped publishes nothing and the
 # pull request sits on "Expected" forever, with no red check to read and no
