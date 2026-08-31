@@ -38,6 +38,9 @@
 #   POST_RESULT    required; needs.post_findings.result from the workflow.
 #   GATE_CAUSE_FILE   optional; path to write the one-line cause to.
 #   GATE_DETAIL_FILE  optional; path to write the full detail to.
+#   GITHUB_SERVER_URL, GITHUB_REPOSITORY, GITHUB_REF_NAME: optional; used to
+#                     build an absolute link to docs/ai-review.md. Absent (a
+#                     local run) falls back to naming the path.
 #   GH_TOKEN, OWNER, REPO_NAME, PR_NUMBER: passed through to the sub-checks.
 set -euo pipefail
 
@@ -84,7 +87,41 @@ crashed_cause() {
   note_cause "$script exited non-zero without reaching a verdict: ${last:-no output}. This is a pipeline failure, not a finding backlog."
 }
 
+# THE PAGE A BLOCKED CONTRIBUTOR IS SENT TO. The gate already enforced the
+# behaviour; what was missing was anywhere explaining it, and a red required
+# check with no explanation reads as a failure to diagnose rather than as a
+# decision pending. That distinction is the whole reason the document exists:
+# after a `refuted` or a `deferred` nothing re-runs the pipeline, because
+# resolving a thread fires no webhook, so the gate stays red on a finding that
+# was already answered properly until somebody runs `gh run rerun --failed`.
+#
+# An ABSOLUTE url, built from the run's own environment. A check run's output is
+# markdown, and a repository-relative link in it resolves to nothing. Falls back
+# to naming the path when the environment is absent, which is the local case:
+# a broken link is worse than a path a reader can find.
+doc_link() {
+  if [ -n "${GITHUB_REPOSITORY:-}" ]; then
+    printf '%s/%s/blob/%s/docs/ai-review.md' \
+      "${GITHUB_SERVER_URL:-https://github.com}" \
+      "$GITHUB_REPOSITORY" \
+      "${GITHUB_REF_NAME:-HEAD}"
+  else
+    printf 'docs/ai-review.md'
+  fi
+}
+
 emit() {
+  # Appended to the DETAIL rather than folded into the cause: the cause becomes
+  # the check run's title, which GitHub renders in the merge box, and a title
+  # is worth more as the one-line reason than as a link nobody can click there.
+  if [ "$fail" -ne 0 ] || [ -n "${GATE_FAILED:-}" ]; then
+    {
+      echo
+      echo "How to resolve this: $(doc_link)"
+      echo
+      echo "In short: reply on each thread with 'Disposition: fixed', 'Disposition: refuted' or 'Disposition: deferred to #N', then resolve it. A fix self-heals because the new commit re-runs the pipeline; a refutation or a deferral adds no commit, so nothing fires and you must run 'gh run rerun --failed'."
+    } >>"$detail"
+  fi
   [ -z "${GATE_CAUSE_FILE:-}" ] || printf '%s\n' "$cause" >"$GATE_CAUSE_FILE"
   [ -z "${GATE_DETAIL_FILE:-}" ] || cp "$detail" "$GATE_DETAIL_FILE"
 }
@@ -111,7 +148,7 @@ if [ "$context_result" != "success" ] ||
   } >"$detail"
   echo "::error::ai-review-resolved: $cause"
   cat "$detail"
-  emit
+  GATE_FAILED=1 emit
   exit 1
 fi
 

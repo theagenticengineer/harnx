@@ -314,5 +314,64 @@ else
   fail_case "a reported disposition failure must keep its own cause: $(cat "$cause_file")"
 fi
 
+# --- a red gate links the page that explains what to do about it -------------
+# The gate already enforced the behaviour; what was missing was anywhere
+# explaining it. A red required check with no explanation reads as a failure to
+# diagnose rather than as a decision pending, and after a refutation or a
+# deferral nothing re-runs the pipeline on its own.
+setup 0 "ok" 1 "::error::a.sh has no disposition"
+run_gate success success >/dev/null
+if grep -q 'docs/ai-review.md' "$detail_file"; then
+  pass=$((pass + 1))
+else
+  fail_case "a red gate's detail must link the resolution protocol: $(cat "$detail_file")"
+fi
+# The re-run is the single most confusing part, so the detail says it without
+# needing the click.
+if grep -q 'gh run rerun --failed' "$detail_file"; then
+  pass=$((pass + 1))
+else
+  fail_case "the detail must say that a refutation or deferral needs a manual re-run"
+fi
+# An ABSOLUTE url when the environment supplies one: a check run's output is
+# markdown, and a repository-relative link in it resolves to nothing.
+setup 0 "ok" 1 "::error::a.sh has no disposition"
+set +e
+env REVIEW_RESULT=success POST_RESULT=success \
+  GATE_CAUSE_FILE="$cause_file" GATE_DETAIL_FILE="$detail_file" \
+  GITHUB_SERVER_URL=https://github.example GITHUB_REPOSITORY=o/r \
+  GITHUB_REF_NAME=trunk \
+  bash "$work/scripts/evaluate-gate.sh" >"$out" 2>&1
+set -e
+if grep -q 'https://github.example/o/r/blob/trunk/docs/ai-review.md' "$detail_file"; then
+  pass=$((pass + 1))
+else
+  fail_case "the link must be absolute when the run environment supplies one: $(cat "$detail_file")"
+fi
+
+# --- the pipeline-failure path links it too ----------------------------------
+# That path exits before the finding checks run, so it does not go through the
+# same code, and it is the path a contributor hits when the engine token has
+# expired: exactly when knowing where to look matters most.
+setup 0 "ok" 0 "ok"
+run_gate failure success >/dev/null
+if grep -q 'docs/ai-review.md' "$detail_file"; then
+  pass=$((pass + 1))
+else
+  fail_case "a pipeline failure must link the protocol too: $(cat "$detail_file")"
+fi
+
+# --- a GREEN gate does not decorate itself with remediation ------------------
+# Nothing to resolve, so a link telling the reader how to resolve it is noise,
+# and this repository's stated position is that output nobody acts on teaches
+# readers to skip the output that matters.
+setup 0 "ok" 0 "ok"
+run_gate success success >/dev/null
+if ! grep -q 'docs/ai-review.md' "$detail_file"; then
+  pass=$((pass + 1))
+else
+  fail_case "a passing gate must not append remediation text: $(cat "$detail_file")"
+fi
+
 echo "RESULT: $pass passed, $fail failed"
 [[ "$fail" -eq 0 ]]
