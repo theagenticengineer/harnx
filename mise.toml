@@ -19,9 +19,37 @@
 # Both are runtime dependencies of .github/workflows/ai-review-trunk.yml. Drop
 # either and the trunk workflow fails at runtime, on the default branch, with
 # an error that points nowhere near this file.
+#
+# THE THREE PINS BELOW THEM ARE THE ANCHOR'S OWN GATES, and they are here only
+# because per-job `install_args` scoping now exists in ai-review-trunk.yml. The
+# objection this file's header used to make, that growing [tools] would make
+# the job holding the review engine's API token install tools it never runs, is
+# what install_args voids: each job names the subset it installs, so the
+# credentialed jobs still take jq and the claude CLI and nothing else. Verified
+# by scripts/tests/trunk-toolchain.bash, which fails if a job invokes a binary
+# it does not install or installs one this file does not pin.
+#
+# Scoped to the anchor verifying its OWN code, per #37 criterion 43: shellcheck
+# and shfmt over its own shell scripts, and pre-commit to run them plus the
+# paired-test gate. Not vale, not markdownlint, not taplo, not gitleaks. Those
+# are floor gates over floor artifacts and belong on the child branch.
+
+[settings]
+# Required for the [hooks] table below; mise gates hooks behind it.
+experimental = true
+
+[hooks]
+# The gates arrive with the toolchain. `mise install` is the first command
+# anybody runs in a fresh clone or worktree, so hook installation rides it
+# rather than living in a README instruction nobody reads. The script exits
+# quietly in CI, where hooks do nothing.
+postinstall = "bash scripts/mise/setup-hooks.sh"
 
 [tools]
 jq = "1.7.1"
+pre-commit = "3.7.1"
+shellcheck = "0.10.0"
+shfmt = "3.8.0"
 # npm_args counters mise's npm backend default of --ignore-scripts=true: this
 # package ships its actual binary via a postinstall script that fetches a
 # platform-native optional dependency, so skipping scripts leaves `claude`
@@ -49,3 +77,13 @@ jq = "1.7.1"
 [tasks.test]
 description = "run the shell-test suite (scripts/tests/*.bash)"
 run = "bash scripts/mise/test.sh"
+
+# `lint` is every local gate this branch has, so a contributor can run what CI
+# runs without pushing. It goes through pre-commit rather than invoking the
+# linters directly, so there is exactly one list of gates (.pre-commit-config.yaml)
+# and `mise run lint`, the git hook and the CI job can never disagree about
+# what the anchor checks.
+
+[tasks.lint]
+description = "run every local gate over the whole tree (the same set CI runs)"
+run = "pre-commit run --all-files --show-diff-on-failure"

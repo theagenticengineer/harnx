@@ -11,22 +11,29 @@
 # no-op; weakening validate-commit-msg.sh so commitlint stops catching
 # anything; swallowing a failure inside scripts/mise/test.sh so shell-tests
 # reports green regardless of what scripts/tests/*.bash actually assert;
+# making scripts/check-paired-tests.sh exit 0 so a script can reach the
+# default branch with no test, which is how six of them already did;
 # editing configure-protection.sh to drop a check from the required list, or
 # flip require_code_owner_reviews back to false; flipping
 # .harnx/instance-config.toml's identity_policy from "private" to "public", or
 # widening its allowed_authors, so a commit author the repo previously refused
 # is silently accepted) must itself pass human review before it can merge.
-# This list is systematically derived from
-# .pre-commit-config.yaml's own hook entries and their referenced config
-# files, not built up finding by finding: every hook that gates the
-# required "pre-commit" check, plus every file that gates the other eight
-# required checks (gitleaks, actionlint, shell-tests, commitlint,
-# branch-name, pr-title, pr-body, ai-review-resolved), is covered below.
-/scripts/ai-review/ @fabioluiz1
-/scripts/git-discipline/ @fabioluiz1
-/scripts/tests/ @fabioluiz1
-/scripts/mise/ @fabioluiz1
-/scripts/configure-protection.sh @fabioluiz1
+# The entries below are DIRECTORY rules wherever a directory holds
+# gate-defining files, and named files only where a single file stands alone.
+# That is a deliberate change of shape rather than a longer list: a list built
+# by enumerating today's files is correct until the next file is added, and the
+# gap it leaves is silent. The directories cover every script that executes a
+# required check, every test that proves one works, every workflow that
+# declares one, and the configuration each reads.
+# THE WHOLE DIRECTORY, not the four subdirectories and one file it used to
+# enumerate. Enumeration is what fails here: every script under scripts/ either
+# executes a required check or is the test that proves one works, so a NEW
+# script arriving at a path nobody listed is unprotected by default, and the
+# person adding it is the person least likely to notice. That is not
+# hypothetical, it is how scripts/check-paired-tests.sh would have arrived: it
+# gates the required "pre-commit" check and sits at the top level, which the
+# old list covered for exactly one file by name.
+/scripts/ @fabioluiz1
 /.github/workflows/ @fabioluiz1
 /.github/CODEOWNERS @fabioluiz1
 # AGENTS.md is here for a different reason than everything else on this list,

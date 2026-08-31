@@ -5,17 +5,26 @@ name: ci
 # This branch is the epic's TRUST ANCHOR: it is the repository's default
 # branch, and it carries the ai-review security core, not the hygiene floor.
 #
-# `shell-tests` IS REAL HERE. It runs `mise run test`, which globs
-# scripts/tests/*.bash over the anchor's own scripts. It used to echo a
-# warning and pass, which is why every defect in those scripts had to be
-# found by a reviewer rather than by a test: the branch every `workflow_run`
-# in the stack resolves from declared eight required checks and verified none
-# of them.
+# `shell-tests` AND `pre-commit` ARE REAL HERE.
 #
-# `pre-commit`, `actionlint` and `gitleaks` are STILL PLACEHOLDERS. They read
-# config the floor owns (.pre-commit-config.yaml, .yamllint.yaml, .vale.ini,
-# styles/), which lives on the CHILD BRANCH IMMEDIATELY ABOVE this one, so
-# they could not run here even if this file tried.
+# `shell-tests` runs `mise run test`, which globs scripts/tests/*.bash over
+# the anchor's own scripts. `pre-commit` runs the anchor's own
+# .pre-commit-config.yaml: shellcheck and shfmt over its shell scripts, plus
+# the paired-test gate. Both used to echo a warning and pass, which is why
+# every defect in those scripts had to be found by a reviewer rather than by a
+# check: the branch every `workflow_run` in the stack resolves from declared
+# eight required checks and verified none of them.
+#
+# The `pre-commit` job is the CI MIRROR of the local git hook, and running the
+# same config from both is the point. A hook alone is advisory to anyone who
+# passes --no-verify; a CI gate alone spends a round trip teaching what a hook
+# teaches in a second.
+#
+# `actionlint` and `gitleaks` are STILL PLACEHOLDERS. They are floor gates over
+# floor artifacts, and #37 criterion 43 scopes what lands here to the anchor
+# verifying its own code. The real versions live on the CHILD BRANCH
+# IMMEDIATELY ABOVE this one, whose .pre-commit-config.yaml and ci.yml replace
+# these wholesale at the same path.
 #
 # Why the placeholders exist at all: branch protection requires the four
 # contexts below. For a `pull_request` event GitHub reads workflow files from
@@ -24,34 +33,47 @@ name: ci
 # can never arrive. This file makes them report.
 #
 # WHAT THAT COSTS, stated plainly: for a pull request cut directly from this
-# branch, those three checks are green and mean NOTHING. That is the same
+# branch, those two checks are green and mean NOTHING. That is the same
 # shape as the tamper this repo's CODEOWNERS exists to catch ("redefining
 # mise.toml's test task to a no-op"), shipped deliberately, with its eyes
 # open, scoped to the one branch where the alternative is a gate that can
-# never report at all. Each of the three emits a warning annotation saying
-# so, so a green tick is never the only thing a reader sees.
+# never report at all. Both emit a warning annotation saying so, so a green
+# tick is never the only thing a reader sees.
 #
-# REMEDIATION: the child branch above carries the real versions of the three.
+# REMEDIATION: the child branch above carries the real versions of the two.
 # Review any promotion into this branch against that branch's CI for those,
-# and against this file for `shell-tests`.
+# and against this file for `shell-tests` and `pre-commit`.
 on: [pull_request]
-# Deny by default, then grant the single read scope the one real job needs.
-# The three placeholder jobs run `echo` and get nothing, matching the pattern
+# Deny by default, then grant the single read scope the two real jobs need.
+# The two placeholder jobs run `echo` and get nothing, matching the pattern
 # ai-review.yml uses: an empty top-level block is not cosmetic, because a job
 # that forgets its own permissions block would otherwise inherit the
 # repository's default token scopes, which can include write.
 permissions: {}
 jobs:
+  # The CI mirror of the local git hook, running the same
+  # .pre-commit-config.yaml the hook does, so the two can never disagree about
+  # what this branch checks.
   pre-commit:
     runs-on: ubuntu-latest
-    timeout-minutes: 2
+    timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
-      - name: Report a placeholder result
-        env:
-          MSG: >-
-            'pre-commit' verified NOTHING on this branch: the trust anchor carries no
-            hook config. The real check lives on the child branch above.
-        run: echo "::warning title=Placeholder check::$MSG"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      # The three tools this branch's hooks run, and nothing else. Same per-job
+      # scoping argument as ai-review-trunk.yml's jobs: every installed tool's
+      # bin directory joins PATH.
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c  # v4.3.0
+        with:
+          version: "2025.10.10"
+          install_args: pre-commit shellcheck shfmt
+          cache: false
+      # `mise run lint`, not `pre-commit run` directly, so this job and a
+      # contributor's local command are literally the same string. A CI job
+      # that runs something subtly different from what it tells people to run
+      # locally is how a gate starts being argued with.
+      - run: mise run lint
   actionlint:
     runs-on: ubuntu-latest
     timeout-minutes: 2

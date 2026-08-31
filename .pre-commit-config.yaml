@@ -1,0 +1,61 @@
+# TRUST-ANCHOR SUBSET. This is deliberately NOT the repository's full
+# .pre-commit-config.yaml, for the same reason mise.toml and ci.yml here are
+# subsets: this branch carries the ai-review security core, not the hygiene
+# floor. The full file, with all fourteen gates, lives on the child branch
+# immediately above this one and replaces this one wholesale at the same path.
+#
+# WHAT IS HERE, and why only this. Issue #37 criterion 43 scopes the anchor's
+# local gates to the trunk verifying its OWN code: shellcheck and shfmt over
+# its own shell scripts, plus the paired-test gate criterion 27 defines. Not
+# vale, not markdownlint, not taplo, not gitleaks; those are floor gates over
+# floor artifacts and pulling them in here would make this branch a second
+# copy of the floor rather than the smallest set that has to be trusted.
+#
+# EVERY HOOK IS `local`, running the tool mise pinned, rather than a remote
+# hook repository pinning its own copy. The child branch's config uses remote
+# repos for shellcheck and shfmt, which is fine there because that branch has
+# no separate mise pins for them to disagree with. Here it would create two
+# pinned versions of one tool, one in mise.toml for `mise run lint` and one in
+# this file for the hook, free to drift apart and to disagree about whether a
+# script is formatted. One pin, in mise.toml, read by both paths.
+#
+# EVERY HOOK DECLARES ITS STAGE. A hook with no `stages:` key runs at EVERY
+# installed stage, and setup-hooks.sh installs four of them, so an unstaged
+# hook would run shellcheck again on every push and on every checkout, and
+# would run it at commit-msg time against the commit message file, where it
+# matches nothing and reports "(no files to check) Skipped". None of that
+# catches anything the pre-commit stage did not already catch a moment
+# earlier; it just spends time and prints lines, and a tool that decorates
+# every operation with output nobody acts on teaches its readers to skip the
+# output that matters. scripts/tests/hook-stages.bash fails a hook added here
+# without a stage.
+repos:
+  - repo: local
+    hooks:
+      - id: shellcheck
+        name: shellcheck
+        entry: mise exec -- shellcheck
+        language: system
+        files: \.(sh|bash)$
+        stages: [pre-commit]
+      - id: shfmt
+        name: shfmt
+        # `-d` makes this a real gate: it prints a diff and exits non-zero on
+        # an unformatted file, instead of the default that writes formatted
+        # output to stdout and always exits 0. `-i 2` matches the indentation
+        # every script here is already written in.
+        entry: mise exec -- shfmt -i 2 -d
+        language: system
+        files: \.(sh|bash)$
+        stages: [pre-commit]
+      - id: check-paired-tests
+        name: check-paired-tests
+        entry: scripts/check-paired-tests.sh
+        language: system
+        # always_run with no filenames: the gate's question is about the whole
+        # tree ("does every script have a test"), not about the files in one
+        # commit. Passing it filenames would let a commit that deletes a test
+        # pass, because the deleted file is not among them.
+        always_run: true
+        pass_filenames: false
+        stages: [pre-commit]

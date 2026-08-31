@@ -43,8 +43,10 @@ It would then sit blocked forever on checks that can never arrive. The
 placeholder jobs exist to report those contexts and do nothing else. Each one
 emits a warning saying so, and both files say it in capitals at the top.
 
-One job is real. `ci.yml`'s `shell-tests` runs `mise run test` over
-`scripts/tests/*.bash`, which covers every script this branch owns.
+Two jobs are real. `ci.yml`'s `shell-tests` runs `mise run test` over
+`scripts/tests/*.bash`, which covers every script this branch owns, and
+`pre-commit` runs `mise run lint` over the same tree. `actionlint` and
+`gitleaks` are the placeholders.
 
 The real `ci.yml` and `git.yml`, which run the linters, formatters, secret
 scanning, shell tests and git-discipline gates for real, are on the child
