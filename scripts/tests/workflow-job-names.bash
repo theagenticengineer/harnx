@@ -135,5 +135,18 @@ else
   fail_case "ai-review-resolved must still be a required context"
 fi
 
+# --- THE ADVISORY STEPS ARE MARKED ADVISORY -----------------------------------
+# The resolved job's contract is that it always publishes a check run naming a
+# cause. Any step before "Evaluate the resolved gate" that can exit non-zero
+# and is not marked `continue-on-error` breaks that: the gate step is skipped
+# and the check run reports a generic failure instead of the real verdict. The
+# expiry warning is advisory by nature, so it must carry the marker.
+expiry_block="$(awk '/^      - name: Warn before a reviewer/{f=1} f&&/^      - name: Evaluate the resolved gate/{exit} f' "$trunk")"
+if printf '%s' "$expiry_block" | grep -q 'continue-on-error: true'; then
+  pass=$((pass + 1))
+else
+  fail_case "the expiry-warning step must be continue-on-error, or a lapsing token reads as a broken pipeline"
+fi
+
 echo "RESULT: $pass passed, $fail failed"
 [[ "$fail" -eq 0 ]]

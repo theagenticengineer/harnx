@@ -78,12 +78,32 @@ expect "sorted and deduplicated" true '["claude","gemini"]'
 # --- dormant, and never a hard failure ---------------------------------------
 # An unarmed repository must not carry a red required check it cannot clear.
 # Each of these is a legitimate state, so each exits 0.
-for spec in 'unset:' 'empty-array:[]' 'malformed:not json' 'object:{"a":1}' 'all-bad-slugs:["Claude","9x","x_y"]'; do
+for spec in 'empty-string:' 'empty-array:[]' 'malformed:not json' 'object:{"a":1}' 'all-bad-slugs:["Claude","9x","x_y"]'; do
   label="${spec%%:*}"
   value="${spec#*:}"
   if [ "$(run "$value")" = "0" ]; then ok; else fail_case "$label must exit 0, not fail: $(cat "$log")"; fi
   expect "$label" false '[]'
 done
+
+# TRULY UNSET, which is a different code path from an empty string and is the
+# one an unarmed repository actually takes: `vars.AI_REVIEWERS` interpolates to
+# nothing and the variable is absent, not empty. The case above was labelled
+# "unset" and tested an empty value, because `run()` always passes
+# `AI_REVIEWERS=`, so the path this repository is in before the registry is
+# armed was never exercised at all.
+: >"$gh_out"
+set +e
+env -u AI_REVIEWERS HEAD_REPOSITORY=o/r REPOSITORY=o/r GITHUB_OUTPUT="$gh_out" \
+  bash "$script" >"$log" 2>&1
+unset_status=$?
+set -e
+if [ "$unset_status" = "0" ]; then ok; else
+  fail_case "an absent AI_REVIEWERS must exit 0, not fail: $(cat "$log")"
+fi
+expect "absent variable" false '[]'
+if grep -q '::notice::' "$log"; then ok; else
+  fail_case "an absent registry is the ordinary unarmed state and must say so: $(cat "$log")"
+fi
 # A malformed value is a typo somebody made while trying to arm a reviewer, so
 # it warns rather than passing in silence.
 run 'not json' >/dev/null

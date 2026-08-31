@@ -117,9 +117,14 @@ reviewers="[]"
 while read -r slug; do
   [ -n "$slug" ] || continue
   secret="AI_REVIEW_ENGINE_TOKEN_$(printf '%s' "$slug" | tr '[:lower:]-' '[:upper:]_')"
+  # The expiry variable's name is derived HERE too, by the same mapping, so the
+  # uppercase rule lives in exactly one place. A second copy of it in the
+  # expiry check would drift on the first slug that needed a hyphen.
+  expires="AI_REVIEW_TOKEN_EXPIRES_$(printf '%s' "$slug" | tr '[:lower:]-' '[:upper:]_')"
   reviewers="$(printf '%s' "$reviewers" | jq -c \
-    --arg slug "$slug" --arg secret "$secret" \
-    '. + [{slug: $slug, secret: $secret, engine: ("scripts/ai-review/" + $slug + ".sh")}]')"
+    --arg slug "$slug" --arg secret "$secret" --arg expires "$expires" \
+    '. + [{slug: $slug, secret: $secret, expires: $expires,
+           engine: ("scripts/ai-review/" + $slug + ".sh")}]')"
 done <<EOF
 $(printf '%s' "$slugs" | jq -r '.[]')
 EOF

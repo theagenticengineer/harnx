@@ -680,6 +680,37 @@ jobs:
       # continue-on-error, so a red gate still reaches the publishing step
       # below instead of aborting the job with no check run reported. The
       # job's own final status is restored by the last step.
+      # BEFORE the verdict, so the warning is in the run whether the gate passes
+      # or fails. An expiry warning that only appeared on a red gate would
+      # arrive at exactly the moment it is too late to be useful.
+      #
+      # `toJSON(vars)` because GitHub cannot index the vars context by a
+      # computed name, and the expiry variable's name is derived from the
+      # reviewer's slug. These are VARIABLES, not secrets: reading the whole map
+      # materialises nothing sensitive, which is why the same trick is refused
+      # for `secrets` in the review job.
+      # ADVISORY, LIKE THE STEP BELOW IT. An expiry warning is information for
+      # whoever maintains the credential, never a verdict about the pull
+      # request, and this job's whole contract is that it always publishes a
+      # check run naming a cause. Without this, a non-zero exit here would skip
+      # "Evaluate the resolved gate" entirely and the check run would say the
+      # job "failed before it could report a cause" without check-resolved.sh
+      # or check-dispositions.sh ever running: an expiring token would read as
+      # a broken pipeline.
+      #
+      # The current `run` pipes through `tee`, and the default shell is
+      # `bash -e` without `pipefail`, so today the step's status is tee's and
+      # the script's exit is already swallowed. That is an accident of the pipe
+      # rather than a decision, and it would silently reverse the moment the
+      # pipe or the shell changed. This states the intent.
+      - name: Warn before a reviewer's credential lapses
+        continue-on-error: true
+        if: ${{ needs.context.outputs.configured == 'true' }}
+        env:
+          REVIEWERS: ${{ needs.context.outputs.reviewers }}
+          VARS: ${{ toJSON(vars) }}
+          GATE_EXPIRY_FILE: ${{ runner.temp }}/gate-expiry.txt
+        run: bash scripts/ai-review/check-expiry.sh | tee "$GATE_EXPIRY_FILE"
       - name: Evaluate the resolved gate
         id: gate
         continue-on-error: true
@@ -702,6 +733,9 @@ jobs:
           # for repository content.
           GATE_CAUSE_FILE: ${{ runner.temp }}/gate-cause.txt
           GATE_DETAIL_FILE: ${{ runner.temp }}/gate-detail.txt
+          # Folded into the check run's body, so an expiry is seen by whoever
+          # reads the gate rather than only by whoever opens the run log.
+          GATE_EXPIRY_FILE: ${{ runner.temp }}/gate-expiry.txt
         # A SCRIPT, not the inline block this used to be, for the same reason
         # as require-diff.sh: an inline block cannot be reached by
         # scripts/tests/*.bash, and this is the logic that decides whether a

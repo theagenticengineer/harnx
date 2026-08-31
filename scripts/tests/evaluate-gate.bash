@@ -471,5 +471,77 @@ else
   fail_case "an absent CONFIGURED must behave as armed"
 fi
 
+# --- an expiry warning rides on EVERY verdict --------------------------------
+# A warning that appeared only on a red gate would arrive exactly when it is
+# too late to be useful, because the thing it warns about is what turns the
+# gate red. It belongs on the check run rather than only in the run log,
+# because a lapsing credential is the one thing that reddens this gate on a
+# pull request that has nothing to do with it.
+expiry_file="$work/expiry.txt"
+printf '%s\n' "::warning::reviewer 'claude' has a credential expiring in 3 day(s), on 2026-09-03." >"$expiry_file"
+
+setup 0 "ok" 0 "ok"
+set +e
+env REVIEW_RESULT=success POST_RESULT=success GATE_EXPIRY_FILE="$expiry_file" \
+  GATE_CAUSE_FILE="$cause_file" GATE_DETAIL_FILE="$detail_file" \
+  bash "$work/scripts/evaluate-gate.sh" >"$out" 2>&1
+status=$?
+set -e
+if [ "$status" -eq 0 ]; then
+  pass=$((pass + 1))
+else
+  fail_case "an expiry warning must not turn a passing gate red: $(cat "$out")"
+fi
+if grep -q 'expiring in 3 day' "$detail_file"; then
+  pass=$((pass + 1))
+else
+  fail_case "a GREEN gate must still carry the expiry warning: $(cat "$detail_file")"
+fi
+# The cause is the check run's title, and "a credential expires soon" is not
+# why this gate passed. The warning belongs in the body.
+if grep -q 'No unresolved Major' "$cause_file"; then
+  pass=$((pass + 1))
+else
+  fail_case "the expiry warning must not displace the verdict in the title: $(cat "$cause_file")"
+fi
+
+# A RED gate carries it too, alongside its own cause.
+setup 0 "ok" 1 "::error::a.sh has no disposition"
+set +e
+env REVIEW_RESULT=success POST_RESULT=success GATE_EXPIRY_FILE="$expiry_file" \
+  GATE_CAUSE_FILE="$cause_file" GATE_DETAIL_FILE="$detail_file" \
+  bash "$work/scripts/evaluate-gate.sh" >"$out" 2>&1
+set -e
+if grep -q 'expiring in 3 day' "$detail_file" && grep -q 'docs/ai-review.md' "$detail_file"; then
+  pass=$((pass + 1))
+else
+  fail_case "a red gate must carry both its remediation and the expiry warning"
+fi
+
+# Nothing to warn about adds nothing. check-expiry.sh prints a reassuring line
+# when every credential is fine, and repeating it on every check run is the
+# noise this repository refuses elsewhere.
+printf '%s\n' "check-expiry: no reviewer credential is near expiry." >"$expiry_file"
+setup 0 "ok" 0 "ok"
+set +e
+env REVIEW_RESULT=success POST_RESULT=success GATE_EXPIRY_FILE="$expiry_file" \
+  GATE_CAUSE_FILE="$cause_file" GATE_DETAIL_FILE="$detail_file" \
+  bash "$work/scripts/evaluate-gate.sh" >"$out" 2>&1
+set -e
+if ! grep -q 'Credential expiry' "$detail_file"; then
+  pass=$((pass + 1))
+else
+  fail_case "a clean expiry check must add nothing to the check run: $(cat "$detail_file")"
+fi
+# An absent file is the ordinary case for a caller that predates this, and must
+# not change anything.
+setup 0 "ok" 0 "ok"
+run_gate success success >/dev/null
+if [ "$(grep -c 'Credential expiry' "$detail_file")" = "0" ]; then
+  pass=$((pass + 1))
+else
+  fail_case "an absent expiry file must add nothing"
+fi
+
 echo "RESULT: $pass passed, $fail failed"
 [[ "$fail" -eq 0 ]]

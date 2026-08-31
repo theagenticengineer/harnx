@@ -15,6 +15,7 @@ is broken, and those two need completely different responses.
 - [A rebase never clears a finding](#a-rebase-never-clears-a-finding)
 - [Deferring, and the issue you may not file](#deferring-and-the-issue-you-may-not-file)
 - [What the gate does not check](#what-the-gate-does-not-check)
+- [When a reviewer's credential is about to lapse](#when-a-reviewers-credential-is-about-to-lapse)
 - [A worked example](#a-worked-example)
 
 ## What turns the gate red
@@ -145,6 +146,35 @@ deliberate lie instead of a silent omission, which is the most a gate can do.
 App itself opened would pass. Enforcing that is a decision for a human to make
 rather than an agent to assume; the payload the gate already fetches carries
 `user.login`, so it is available if somebody wants it.
+
+## When a reviewer's credential is about to lapse
+
+A reviewer named in the registry whose credential has lapsed does not go quiet.
+Its leg fails and the gate goes red.
+
+That is the honest report, and on its own it is a nasty surprise. The person
+who reads that failure is whoever pushed next, on a pull request that has
+nothing to do with the credential, and they cannot fix it.
+
+So the two work as a pair. Set a per-reviewer variable to the credential's
+expiry date and the gate warns a week ahead, on every verdict:
+
+```text
+AI_REVIEW_TOKEN_EXPIRES_CLAUDE = 2026-09-30
+```
+
+The name follows the reviewer's slug, uppercased, with hyphens becoming
+underscores. It is optional per reviewer: plenty of credentials never expire,
+and there is nothing to warn about for those.
+
+The warning appears in the check run's own body, not only in the workflow log,
+because that is where somebody looking at a pull request will see it. It rides
+on a green verdict as well as a red one. A warning that showed up only once the
+gate was already red would arrive exactly when it is too late.
+
+A value that is not a real date warns and is skipped. `2026-02-30` is refused
+along with `next tuesday`, since a date that parses is not the same as a date
+that exists. A typo costs a message, never a red gate.
 
 ## A worked example
 

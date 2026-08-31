@@ -41,6 +41,12 @@
 #                  that can still publish a verdict.
 #   REVIEW_RESULT  required; needs.review.result from the workflow.
 #   POST_RESULT    required; needs.post_findings.result from the workflow.
+#   GATE_EXPIRY_FILE  optional; a file holding check-expiry.sh's output. Its
+#                     warnings are folded into the check run's body so an
+#                     approaching expiry is seen by whoever reads the GATE,
+#                     not only by whoever opens the run log. A credential
+#                     lapsing is the one thing that turns this gate red on a
+#                     pull request that has nothing to do with it.
 #   GATE_CAUSE_FILE   optional; path to write the one-line cause to.
 #   GATE_DETAIL_FILE  optional; path to write the full detail to.
 #   GITHUB_SERVER_URL, GITHUB_REPOSITORY, GITHUB_REF_NAME: optional; used to
@@ -116,6 +122,17 @@ doc_link() {
 }
 
 emit() {
+  # THE EXPIRY WARNING RIDES ON EVERY VERDICT, red or green. A warning that
+  # appeared only on a red gate would arrive exactly when it is too late to be
+  # useful, since the thing it warns about is what turned the gate red.
+  if [ -n "${GATE_EXPIRY_FILE:-}" ] && [ -s "${GATE_EXPIRY_FILE:-}" ] &&
+    grep -q '::warning::' "$GATE_EXPIRY_FILE" 2>/dev/null; then
+    {
+      echo
+      echo "Credential expiry:"
+      sed 's/^::warning:://' "$GATE_EXPIRY_FILE" | grep -v '^check-expiry:' || true
+    } >>"$detail"
+  fi
   # Appended to the DETAIL rather than folded into the cause: the cause becomes
   # the check run's title, which GitHub renders in the merge box, and a title
   # is worth more as the one-line reason than as a link nobody can click there.
