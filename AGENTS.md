@@ -23,6 +23,11 @@ link here cannot point at a document that does not.
   repository refuses to work until a human states it.
 - [Git discipline](.agents/rules/git-discipline.md): branch names, commit
   headers, the one-commit-per-push cadence, and why nothing bypasses a hook.
+- [Worktrees](.agents/rules/worktree.md): where a branch is checked out, why it
+  is never the primary clone, and what removing one does and does not involve.
+- [The ripple](.agents/rules/ripple.md): why the stack exists, how to create a
+  rung, how a base change propagates upward, and which paths are inert until
+  the cutover.
 - [Task runner](.agents/rules/task-runner.md): `mise` as the single entry point
   for tools and commands, and which file owns the list of gates.
 

@@ -14,8 +14,23 @@ name: ci
 # drift.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  # THE DEFAULT BRANCH IS READ FROM THE EVENT, not written as `main`. During an
+  # epic that promotes a trust anchor, the default branch IS that anchor, so a
+  # literal `main` here protects a branch nothing pushes to while cancelling
+  # in-flight runs on the branch of record. That is not hypothetical: it
+  # happened on this repository, and a cancelled run reports as "the pipeline
+  # did not complete", which reads as a broken gate rather than as a superseded
+  # push.
+  cancel-in-progress: ${{ github.ref_name != github.event.repository.default_branch }}
 on:
+  # `push` is FILTERED TO `main` and deliberately not to the current default
+  # branch, which is the one place a literal is still right. This trigger exists
+  # to give the branch of record a run after a merge, and mid-epic nothing
+  # merges: every rung already gets a full run from `pull_request`, including
+  # the trust anchor, which has its own open pull request. `on.push.branches`
+  # takes no expression, so making this dynamic would mean listing the anchor by
+  # name and removing it again at the #44 cutover, for a trigger that fires zero
+  # times either way.
   push:
     branches: [main]
   pull_request:
