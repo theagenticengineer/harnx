@@ -78,6 +78,18 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: bash scripts/git-discipline/ci-check-merge-commits.sh
+      # The fourth, in the same job and for the same reasons. It walks the range
+      # rather than checking the tip, and the tip is the ONE commit that cannot
+      # carry this defect: a forward reference resolves by the time the file it
+      # names has landed, so the broken commits are always the ones in between.
+      # A tip-only check is exactly what failed to catch this in the earlier
+      # rebuild.
+      - name: Reject forward references in PR range
+        if: ${{ always() }}
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: bash scripts/git-discipline/ci-check-forward-refs.sh
   branch-name:
     runs-on: ubuntu-latest
     timeout-minutes: 5

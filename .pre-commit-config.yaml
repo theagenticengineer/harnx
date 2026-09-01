@@ -159,6 +159,18 @@ repos:
         entry: scripts/git-discipline/validate-commit-msg.sh
         language: system
         stages: [commit-msg]
+      - id: no-forward-refs
+        name: check-no-forward-refs
+        entry: scripts/git-discipline/check-no-forward-refs.sh
+        language: system
+        # The whole tree, and the STAGED version of it: the question is whether
+        # every spine reference resolves in the commit about to be made, which
+        # is a property of that commit rather than of the files in it. Passing
+        # filenames would let a commit that DELETES a referenced script pass,
+        # because the deleted file is not among them.
+        always_run: true
+        pass_filenames: false
+        stages: [pre-commit]
       - id: no-merge-commit
         name: forbid-merge-commit
         entry: scripts/git-discipline/forbid-merge-commit.sh

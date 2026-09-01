@@ -88,5 +88,5 @@ jobs:
           #
           # Kept honest by scripts/tests/ci-toolchain.bash, which derives this
           # list from what the suites actually invoke rather than trusting it.
-          install_args: jq shfmt gitleaks
+          install_args: jq shfmt gitleaks shellcheck
       - run: mise run test
