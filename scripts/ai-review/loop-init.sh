@@ -299,14 +299,12 @@ seed last-failure.txt </dev/null
 # that CI has never run, which would make the cap count only local passes while
 # looking like it had counted both. Null says "not known", and the cap says so
 # out loud when it falls back.
+# ONE IMPLEMENTATION OF THE COUNT, shared with check-round-cap.sh, which
+# subtracts the number recorded here from a freshly computed one. Two copies
+# would be free to disagree, and a disagreement would not look like a bug: it
+# would look like rounds that were never spent.
 rung="$(git rev-parse --abbrev-ref HEAD)"
-ci_head_shas() {
-  command -v gh >/dev/null 2>&1 || return 1
-  local shas
-  shas="$(gh run list --branch "$rung" --limit 500 --json headSha \
-    -q '.[].headSha' 2>/dev/null)" || return 1
-  printf '%s\n' "$shas" | sed '/^$/d' | sort -u | wc -l | tr -d ' '
-}
+ci_head_shas() { bash scripts/ai-review/ci-head-shas.sh "$rung" 2>/dev/null; }
 
 log="$loop_dir/passes.jsonl"
 # Asked STRUCTURALLY, not by grepping for a key order. jq emits the keys in the

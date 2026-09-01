@@ -203,7 +203,8 @@ printf '%s' "$dismissed" >"$handled_file"
 t0="$(date +%s)"
 crashed=0
 engine_err="$(mktemp)"
-trap 'rm -f "$diff_file" "$out" "$out.usage.json" "$idx" "$handled_file" "$engine_err"' EXIT
+open_file="$(mktemp)"
+trap 'rm -f "$diff_file" "$out" "$out.usage.json" "$idx" "$handled_file" "$engine_err" "$open_file"' EXIT
 # The engine's stderr is TEED, not captured: an operator watching a slow review
 # should still see it as it happens, and the copy is only so the exit can say
 # WHICH kind of failure this was.
@@ -300,6 +301,26 @@ if ! jq -r '
   echo "| #${pass} | Local | ${majors_accepted}/${majors_raw} | ${minors_accepted}/${minors_raw} | ${nits_accepted}/${nits_raw} | ${elapsed}s |"
 fi
 
+# THE HARNESS RECORD, written before any of the exits below rather than after
+# each one. Every path out of this script from here on is a pass that happened
+# and therefore a pass that must be recorded; putting the call in one place is
+# what stops a future early-return from silently skipping it.
+#
+# It is a SEPARATE file from the pass log rendered above. That log's rows carry
+# no model, prompt or gate, so they cannot be compared with rows written now.
+printf '%s' "$open" >"$open_file"
+record() {
+  RECORD_PASS_OUTCOME="$1" \
+    RECORD_PASS_OPEN="$open_file" \
+    RECORD_PASS_RAW="$out" \
+    RECORD_PASS_SIDECAR="$out.usage.json" \
+    RECORD_PASS_SECONDS="$elapsed" \
+    RECORD_PASS_TREE="${2:-}" \
+    RECORD_PASS_NARROWED="${AI_REVIEW_FILE:-}" \
+    RECORD_PASS_GATE_TAIL="$engine_err" \
+    bash scripts/ai-review/record-pass.sh || true
+}
+
 if [ "$crashed" = 1 ]; then
   # A REFUSAL IS NOT A CRASH, and reporting one as the other sends the operator
   # looking for a broken pipeline when the answer is "this diff is too big to
@@ -307,6 +328,7 @@ if [ "$crashed" = 1 ]; then
   # and with its numbers rather than starting a review it cannot finish; that
   # message is already on stderr above, so this only has to say what to DO.
   if grep -q 'over the limit of' "$engine_err"; then
+    record refused
     echo "ai-review:local: ERROR: the diff is too large to review in one pass, so no review ran." >&2
     echo "  This is a refusal, not a crash. See the engine's message above for the numbers." >&2
     echo "  On a stacked branch the usual cause is a missing BASE: without it the diff carries" >&2
@@ -314,12 +336,14 @@ if [ "$crashed" = 1 ]; then
     echo "  If the diff really is that large, split the pull request, or raise" >&2
     echo "  AI_REVIEW_MAX_CHUNKS and the job's timeout together." >&2
   else
+    record crashed
     echo "ai-review:local: ERROR: the review engine crashed; the results above are INCOMPLETE, not a clean pass." >&2
   fi
   exit 1
 fi
 
 if [ "$majors" -gt 0 ]; then
+  record open
   echo "ai-review:local: unresolved Major finding(s); fix, or record a reason in $ledger, then re-run." >&2
   exit 1
 fi
@@ -331,9 +355,16 @@ fi
 # reusing one variable makes the two structurally identical, not just
 # usually identical.
 if [ -n "${AI_REVIEW_FILE:-}" ]; then
+  # Recorded as `open`, never as an acceptance. record-pass.sh refuses a
+  # narrowed acceptance by name too, so this is belt and braces on purpose: the
+  # rule that a pass which saw one file has not reviewed the tree is the same
+  # rule the push gate rests on, and it is cheaper to state twice than to
+  # discover it was stated nowhere.
+  record open
   echo "ai-review:local: clean for $AI_REVIEW_FILE. The push gate is UNCHANGED: re-run without AI_REVIEW_FILE to review the whole tree."
   exit 0
 fi
 
+record accepted "$current_tree"
 printf '%s\n' "$current_tree" >"$(git rev-parse --git-path ai-review-reviewed-tree)"
 echo "ai-review:local: recorded clean review of tree $current_tree (push gate satisfied)."

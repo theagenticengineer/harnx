@@ -145,6 +145,13 @@ chunk_dir=""
 prompt_file=""
 raw=""
 raw_err=""
+# THE REGIME: what this pass was actually run BY, as opposed to what it found.
+# Assigned once, further down, as soon as the pieces they are computed from
+# exist. Empty here so an early exit emits null for them rather than failing,
+# and so `null` means "the run never got far enough to know" rather than
+# "unknown for some other reason".
+prompt_sha=""
+cli_version=""
 
 # Called once per SUCCESSFUL CLI invocation, from inside call_engine, which is
 # the single point every invocation passes through.
@@ -199,7 +206,8 @@ write_usage_sidecar() {
     printf '%s\n' "$empty" >"$sidecar" 2>/dev/null || true
     return 0
   fi
-  jq -s --arg mr "$model" --arg pk "${pass_kind:-unknown}" --arg rv "$reviewer" '{
+  jq -s --arg mr "$model" --arg pk "${pass_kind:-unknown}" --arg rv "$reviewer" \
+    --arg ps "$prompt_sha" --arg cv "$cli_version" '{
     calls: length,
     unmeasured_calls: ([.[] | select(.unmeasured == true)] | length),
     input_tokens: (map(.input_tokens) | add // 0),
@@ -210,6 +218,8 @@ write_usage_sidecar() {
     cost_basis: "modelled-api-equivalent",
     model_requested: $mr,
     model_resolved: (map(.models[]) | unique),
+    prompt_sha: (if $ps == "" then null else $ps end),
+    cli_version: (if $cv == "" then null else $cv end),
     pass: $pk,
     reviewer: $rv
   }' "$usage_log" >"$sidecar" 2>/dev/null ||
@@ -483,6 +493,43 @@ PROMPT
   # block can never inject a marker line of its own.
   printf '%s\n' "${text/<TASK>/$task}"
 }
+
+# THE PROMPT'S IDENTITY, HASHED BEFORE THE NONCE IS SUBSTITUTED.
+#
+# `render_prompt '<NONCE>'` renders the template with the nonce placeholder
+# replaced by itself, which is a no-op, so what comes back is the instruction
+# exactly as written with the task block expanded. Hashing the RENDERED prompt
+# instead would hash a fresh 16-byte random value on every run, so the figure
+# would never repeat and the "did the prompt change mid-rung" question it exists
+# to answer could never be asked.
+#
+# It is per pass_kind, deliberately: a code pass and a drift pass are different
+# instructions and averaging results across them would be the regime error the
+# fingerprint exists to make visible.
+prompt_sha="$(render_prompt '<NONCE>' | shasum -a 256 | awk '{print $1}')"
+
+# WHAT ACTUALLY RAN, which is not necessarily what mise.toml pins. The engine
+# invokes a bare `claude`, so it gets whatever is first on PATH: measured on a
+# developer machine as 2.1.236 while mise.toml pinned 2.1.245. In CI mise puts
+# the pinned build first and the two agree. Recording it is how a result
+# produced under one CLI is prevented from being silently compared against one
+# produced under another.
+#
+# Never fatal. A CLI that cannot answer `--version` can still review, and
+# refusing to review because the fingerprint is incomplete would trade the whole
+# function for one field.
+# `</dev/null` IS LOAD-BEARING, not tidiness. This runs inside a command
+# substitution, so the probe inherits whatever stdin the engine was given. The
+# real CLI does not read it, but a subprocess asked only for a version string
+# has no business holding the caller's input, and anything that DOES read it
+# blocks forever waiting for an EOF that never comes.
+#
+# Measured: scripts/tests/ai-review-local.bash stubs `claude` with a script
+# whose first act is `cat >"$CLAUDE_STUB_PROMPT"`, and adding this probe hung
+# that suite. It looked intermittent, because backgrounding the test changed
+# whether stdin was already closed, which is the worst way for a hang to
+# present itself.
+cli_version="$(claude --version </dev/null 2>/dev/null | head -1 || true)"
 
 # CHUNKING, split on `diff --git` boundaries so a finding never straddles two
 # calls. A diff larger than the model's usable context was previously sent

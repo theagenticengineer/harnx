@@ -98,6 +98,17 @@ envelope() {
   }'
 }
 
+# `--version` IS ANSWERED WITHOUT COUNTING AS A CALL. The engine asks the CLI
+# what version it is, to record the regime a result was produced under. It is
+# not a review call: it makes no request, costs nothing, and counting it would
+# put a phantom call in every sidecar and inflate every cost-per-call figure.
+case "${1:-}" in
+--version)
+  printf '9.9.9 (Claude Code Test Stub)\n'
+  exit 0
+  ;;
+esac
+
 n=1
 if [ -n "${CLAUDE_STUB_CALLS:-}" ]; then
   [ -f "$CLAUDE_STUB_CALLS" ] || printf '0' >"$CLAUDE_STUB_CALLS"
@@ -1017,6 +1028,39 @@ fi
 if run CLAUDE_STUB_RESULT='[]' AI_REVIEW_PASS=issue-body; then
   fail_case "a refusal must exit non-zero even with the sidecar's EXIT trap installed"
 else ok; fi
+
+# --- THE REGIME FINGERPRINT --------------------------------------------------
+# The sidecar answers what a pass cost. These answer what it was run BY, which
+# is what makes two results comparable or not.
+run CLAUDE_STUB_RESULT='[]' || true
+if [ "$(jq -r '.cli_version' "$sidecar")" = "9.9.9 (Claude Code Test Stub)" ]; then ok; else
+  fail_case "the sidecar must record the CLI version that actually ran, got $(jq -r '.cli_version' "$sidecar")"
+fi
+# Asking the version must not look like a review call.
+if [ "$(jq -r '.calls' "$sidecar")" = "1" ]; then ok; else
+  fail_case "asking --version must not be counted as a call, got $(jq -r '.calls' "$sidecar")"
+fi
+# THE PROMPT HASH MUST BE STABLE ACROSS RUNS. The rendered prompt embeds a fresh
+# 16-byte nonce every run, so a hash taken after substitution would differ every
+# time and the "did the prompt change mid-rung" question could never be asked.
+sha1="$(jq -r '.prompt_sha' "$sidecar")"
+run CLAUDE_STUB_RESULT='[]' || true
+sha2="$(jq -r '.prompt_sha' "$sidecar")"
+if [ -n "$sha1" ] && [ "$sha1" != null ] && [ "$sha1" = "$sha2" ]; then ok; else
+  fail_case "prompt_sha must be stable across runs, got '$sha1' then '$sha2'"
+fi
+# ...and it must DIFFER between pass kinds, which are different instructions.
+# Averaging a code pass against a drift pass is the regime error this exists to
+# make visible, so one shared hash would defeat the field.
+run AI_REVIEW_PASS=pr-body AI_REVIEW_SUBJECT="$subject" CLAUDE_STUB_RESULT='[]' || true
+if [ "$(jq -r '.prompt_sha' "$sidecar")" != "$sha1" ]; then ok; else
+  fail_case "a different pass kind is a different prompt and must hash differently"
+fi
+# An early exit knows no prompt, and says null rather than inventing one.
+run CLAUDE_STUB_RESULT='[]' AI_REVIEW_PASS=nonsense || true
+if [ "$(jq -r '.prompt_sha' "$sidecar")" = null ]; then ok; else
+  fail_case "a run that never rendered a prompt must record prompt_sha null"
+fi
 
 echo "RESULT: $pass passed, $fail failed"
 [[ "$fail" -eq 0 ]]

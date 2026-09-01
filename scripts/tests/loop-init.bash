@@ -54,7 +54,12 @@ for tool in bash git jq date sed sort wc tr cat mkdir grep printf; do
 done
 
 repo="$work/repo"
-mkdir -p "$repo"
+# THE HELPER IS COPIED IN, and forgetting it is not a harmless omission: without
+# it loop-init's CI count fails because the SCRIPT is missing rather than because
+# gh is, and every null-baseline assertion below would pass for the wrong reason
+# while the real gh-absent path went untested.
+mkdir -p "$repo/scripts/ai-review"
+cp "$repo_root/scripts/ai-review/ci-head-shas.sh" "$repo/scripts/ai-review/"
 git -C "$repo" init -q
 git -C "$repo" config user.email t@acme.dev
 git -C "$repo" config user.name Tester
@@ -141,6 +146,35 @@ fi
 if grep -q 'ci_head_shas: null' "$first_out"; then ok; else
   fail_case "a null baseline must be reported out loud, got: $(cat "$first_out")"
 fi
+
+# --- 7b. WITH a gh that answers, the real count is recorded ------------------
+# The null path above is the common one for a contributor, but it is only half
+# the behaviour. Without this, a loop-init that always recorded null would pass
+# every assertion here.
+withgh="$work/withgh"
+mkdir -p "$withgh"
+cp -R "$nogh"/. "$withgh"/
+cat >"$withgh/gh" <<'GHSTUB'
+#!/usr/bin/env bash
+# Three runs over two distinct head SHAs: the count is of STATES pushed, not of
+# workflow runs, and a stub returning one line per run would hide the difference.
+printf 'aaa111
+aaa111
+bbb222
+'
+GHSTUB
+chmod +x "$withgh/gh"
+rm -rf "$loop"
+(cd "$repo" && env PATH="$withgh" bash "$script" >"$work/out" 2>&1) || true
+if [ "$(jq -s -r '.[0].ci_head_shas' "$loop/passes.jsonl")" = "2" ]; then ok; else
+  fail_case "with gh answering, the baseline must record the DISTINCT sha count, got $(head -1 "$loop/passes.jsonl")"
+fi
+if grep -q '2 distinct CI head SHA' "$work/out"; then ok; else
+  fail_case "a real count must be reported, got: $(cat "$work/out")"
+fi
+rm -rf "$loop"
+run || true
+cp "$work/out" "$first_out"
 
 # --- 8. a DIFFERENT rung gets its own baseline -------------------------------
 # Rungs are counted separately; inheriting another branch's baseline would

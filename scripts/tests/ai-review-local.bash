@@ -43,10 +43,29 @@ prompt="$(mktemp)"
 # `ls -l` rather than a checksum: it covers appends, truncations and new files,
 # and needs no tool beyond coreutils. Missing files are a legitimate state and
 # render as nothing, which compares equal to itself.
+# `--git-path` RETURNS A RELATIVE PATH IN AN ORDINARY CLONE, and absolute only
+# in a linked worktree. Measured both ways: from a plain `git init` repository it
+# answers `.git/ai-review-reviewed-tree`, while from this branch's worktree it
+# answers a full path under `.git/worktrees/`. `-C` changes git's directory, not
+# the shell's, so the relative answer resolves against whatever cwd the suite was
+# invoked from.
+#
+# Unprefixed, that made this check pass VACUOUSLY off the repository root: both
+# snapshots resolve the same wrong path, `ls -l` finds nothing twice, and nothing
+# compares equal to nothing. This branch develops in a worktree, so the bug was
+# invisible here and would have shipped to every generated repository, which are
+# ordinary clones. That is the placebo this check's own comment warns about,
+# reintroduced one line below it.
 own_harnx_state() {
+  local state_path
+  state_path="$(git -C "$repo_root" rev-parse --git-path ai-review-reviewed-tree)"
+  case "$state_path" in
+  /*) ;;
+  *) state_path="$repo_root/$state_path" ;;
+  esac
   ls -l "$repo_root/.harnx/ai-review-pass-log.jsonl" \
     "$repo_root/.harnx/ai-review-dismissed.json" \
-    "$(git -C "$repo_root" rev-parse --git-path ai-review-reviewed-tree)" 2>/dev/null || true
+    "$state_path" 2>/dev/null || true
 }
 own_harnx_before="$(own_harnx_state)"
 
@@ -65,11 +84,52 @@ mkdir -p "$fixture/bin" "$fixture/scripts/ai-review" "$fixture/scripts/mise" "$f
 # two-dot or three-dot.
 cat >"$fixture/bin/claude" <<'CLAUDE_STUB'
 #!/usr/bin/env bash
+# `--version` IS ANSWERED BEFORE STDIN IS READ, and the order is the whole
+# point. The engine probes the CLI's version to record the regime a result was
+# produced under, and this stub's next act is `cat`, which blocks forever
+# waiting for an EOF that a version probe never sends. That hung this suite,
+# and it presented as an intermittent stall rather than a failure, because
+# backgrounding the test changed whether stdin happened to be closed already.
+case "${1:-}" in
+--version)
+  printf '9.9.9 (Claude Code Test Stub)\n'
+  exit 0
+  ;;
+esac
 cat >"$CLAUDE_STUB_PROMPT"
 printf '{"result":"[]","is_error":false}'
 CLAUDE_STUB
 chmod +x "$fixture/bin/claude"
+
+# `gh` IS STUBBED, AND ITS ABSENCE WAS A REAL DEFECT RATHER THAN AN OVERSIGHT.
+# The runner records an acceptance, record-pass.sh asks ci-head-shas.sh for the
+# branch's CI count, and that shells out to `gh run list`. With no stub the
+# suite made a LIVE NETWORK CALL: its runtime depended on GitHub's latency and
+# its result on whether the machine held credentials. Observed as an
+# intermittent stall that pushed the whole suite past ten minutes on one run
+# and finished in forty-five seconds on the next, which is the worst kind of
+# flake because it looks like a hang rather than a failure.
+#
+# Every other suite added alongside this one already builds a PATH with no gh
+# or a scripted one; this is the one that was missed.
+#
+# It answers, rather than failing, so the acceptance row's CI count is exercised
+# instead of falling back to null for want of a binary.
+cat >"$fixture/bin/gh" <<'GH_STUB'
+#!/usr/bin/env bash
+printf 'sha-one\nsha-two\nsha-two\n'
+GH_STUB
+chmod +x "$fixture/bin/gh"
 cp "$repo_root/scripts/ai-review/review-engine.sh" "$fixture/scripts/ai-review/"
+# THE SCRIPTS THE RUNNER DRIVES ARE COPIED IN, not just the engine. The runner
+# calls record-pass.sh on every path out of a review, and that asks
+# ci-head-shas.sh for the branch's CI count when it records an acceptance.
+# Without them the calls failed, the `|| true` swallowed it, and the wiring this
+# suite exists to cover was never executed while every assertion still passed.
+# The same fixture-drift that made the loop-init suite green for the wrong
+# reason.
+cp "$repo_root/scripts/ai-review/record-pass.sh" "$fixture/scripts/ai-review/"
+cp "$repo_root/scripts/ai-review/ci-head-shas.sh" "$fixture/scripts/ai-review/"
 # The script under test is COPIED into the fixture and run from there, so the
 # path below is the only reference to it; there is deliberately no `$script`
 # variable pointing at the original, because running the original would run it
@@ -299,6 +359,36 @@ if [ -s "$fixture/$statefile" ]; then
 else
   fail_case "a full clean pass must still record the reviewed tree: $(cat "$out")"
 fi
+
+# --- THE HARNESS RECORD IS ACTUALLY WRITTEN ----------------------------------
+# The runner calls record-pass.sh on every path out of a review. Until the
+# fixture carried that script the call failed, `|| true` swallowed it, and this
+# wiring was never executed while every assertion above still passed. These
+# assert the two rows a clean pass must leave behind, which is what the round
+# cap later counts.
+log="$fixture/.harnx/loop/passes.jsonl"
+if [ -s "$log" ] && [ "$(jq -s '[.[] | select(.type == "pass")] | length' "$log")" -ge 1 ]; then
+  pass=$((pass + 1))
+else
+  fail_case "a review must leave a pass row in $log: $(cat "$log" 2>/dev/null)"
+fi
+# A clean full pass is an acceptance, and the acceptance row is what resets the
+# round cap. It carries the CI count, which is why the fixture stubs gh.
+if [ "$(jq -s '[.[] | select(.type == "acceptance")] | length' "$log")" -ge 1 ] &&
+  [ "$(jq -s -r '[.[] | select(.type == "acceptance")] | last | .ci_head_shas' "$log")" = "2" ]; then
+  pass=$((pass + 1))
+else
+  fail_case "a clean full pass must record an acceptance carrying the CI count: $(cat "$log" 2>/dev/null)"
+fi
+# The regime travels from the engine's sidecar onto the row. A row without it
+# cannot be compared with any other row, which is the whole reason the second
+# log exists.
+if [ "$(jq -s -r '[.[] | select(.type == "pass")] | last | .cli_version' "$log")" = "9.9.9 (Claude Code Test Stub)" ]; then
+  pass=$((pass + 1))
+else
+  fail_case "the pass row must carry the regime from the sidecar: $(jq -s -c '[.[] | select(.type == "pass")] | last' "$log" 2>/dev/null)"
+fi
+
 rm -f "$fixture/second.txt" "$fixture/$statefile"
 
 echo "RESULT: $pass passed, $fail failed"
