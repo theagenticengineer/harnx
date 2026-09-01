@@ -37,6 +37,19 @@ fi
 # --force-with-lease push. Without it, `git pull` MERGES, which both violates
 # the no-merge-commit gate and corrupts the next ripple's "what is uniquely
 # mine" calculation.
+
+# THE POLICY IS CONSULTED BEFORE ANYTHING IS WRITTEN, through the shared
+# fragment. Whether and how to stack is a property of the project, not of the
+# harness: a repository that never stacks should not have stacking settings
+# written into it.
+# shellcheck source=scripts/git-discipline/stacking-policy.sh
+# shellcheck disable=SC1091  # sourced at runtime; not followed without -x
+. "$repo_root/scripts/git-discipline/stacking-policy.sh"
+if ! stacking_enabled; then
+  echo "setup-git-config: stacking is off ($HARNX_POLICY_FILE); the stacking git settings are not written."
+  exit 0
+fi
+
 git -C "$repo_root" config --local pull.rebase true
 
 # push.default=current means `git push` and `git push --force-with-lease` need

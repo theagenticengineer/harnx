@@ -36,6 +36,7 @@ git -C "$repo" config user.name Tester
 mkdir -p "$repo/scripts/git-discipline"
 cp "$repo_root/scripts/git-discipline/check-branch-rebased.sh" "$repo/scripts/git-discipline/"
 cp "$repo_root/scripts/git-discipline/resolve-base.sh" "$repo/scripts/git-discipline/"
+cp "$repo_root/scripts/git-discipline/stacking-policy.sh" "$repo/scripts/git-discipline/"
 printf 'base\n' >"$repo/a.txt"
 git -C "$repo" add -A
 git -C "$repo" commit -qm 'feat(#1): the base commit'

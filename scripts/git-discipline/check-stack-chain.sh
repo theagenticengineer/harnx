@@ -41,13 +41,48 @@ set -euo pipefail
 max_depth="${MAX_DEPTH:-20}"
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
-stop_at="${STOP_AT:-}"
-if [ -z "$stop_at" ]; then
-  stop_at="$(gh repo view --json defaultBranchRef -q .defaultBranchRef.name 2>/dev/null || echo main)"
+# THE POLICY IS CONSULTED BEFORE ANYTHING ELSE, including before the
+# default-branch lookup below. "Inert" means taking no action, and a network
+# call is an action: a repository that has turned stacking off must not have
+# this gate reaching for the API, which would also make it fail offline for a
+# project that never asked for any of this.
+# THE POLICY IS CONSULTED FIRST, through the shared fragment. Whether a
+# repository stacks at all is a property of the project, not of the harness, and
+# "inert" must mean taking no action and failing nothing.
+# shellcheck source=scripts/git-discipline/stacking-policy.sh
+# shellcheck disable=SC1091  # sourced at runtime; not followed without -x
+. "$script_dir/stacking-policy.sh"
+if ! stacking_enabled; then
+  echo "check-stack-chain: stacking is off ($HARNX_POLICY_FILE); nothing to walk."
+  exit 0
 fi
 
 gh_err="$(mktemp)"
 trap 'rm -f "$gh_err"' EXIT
+
+# THE TERMINUS IS RESOLVED OR THE RUN FAILS. `|| echo main` was the same
+# fail-open this script rejects below for `gh pr list`: an auth failure, a
+# network failure and a rate limit would all silently make the terminus the
+# literal `main`, and during an epic that promotes a trust anchor `main` is NOT
+# the default branch. The walk would then stop at a branch that is not the top
+# of the stack, or never reach one and be cut off by MAX_DEPTH, and either way
+# it can report "the chain is intact" having verified something other than the
+# chain.
+#
+# STOP_AT stays an explicit override, because a caller naming the terminus needs
+# no lookup at all. Only the DEFAULT resolution is fatal.
+stop_at="${STOP_AT:-}"
+if [ -z "$stop_at" ]; then
+  if ! stop_at="$(gh repo view --json defaultBranchRef -q .defaultBranchRef.name 2>"$gh_err")"; then
+    echo "::error::check-stack-chain: could not read the repository's default branch: $(tr '\n' ' ' <"$gh_err")" >&2
+    echo "       This is a pipeline failure, not an answer. Refusing to assume 'main': during an epic that promotes a trust anchor the default branch is not main, and a walk that terminates at the wrong branch can report a chain intact having verified something else. Pass STOP_AT to name the terminus explicitly." >&2
+    exit 1
+  fi
+  if [ -z "$stop_at" ]; then
+    echo "::error::check-stack-chain: the repository reported an empty default branch name." >&2
+    exit 1
+  fi
+fi
 
 branch="$HEAD_BRANCH"
 visited=""

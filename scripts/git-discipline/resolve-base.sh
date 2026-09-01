@@ -53,6 +53,23 @@ if [ -z "$branch" ] || [ "$branch" = "HEAD" ]; then
   exit 1
 fi
 
+# THE BRANCH NAME IS VALIDATED HERE, at the source, not only in the consumers.
+# `BRANCH` is a documented override AND is passed by check-stack-chain.sh from a
+# name it read out of the API while walking, so it reaches this script from
+# outside. It is then interpolated into a `git config` key and handed to `gh` as
+# a positional argument, and a leading dash is read as an option wherever it can
+# be.
+#
+# check-branch-rebased.sh and check-stack-chain.sh both guard the base name they
+# produce; guarding here as well is what stops the resolver from being the hole
+# under all three of them.
+case "$branch" in
+-* | *' '* | *'..'* | *'~'* | *'^'* | *':'*)
+  echo "::error::resolve-base: '$branch' is not a usable branch name. A leading dash, a space, or any of '..', '~', '^', ':' cannot be a ref, and git or gh would read the first of those as an option." >&2
+  exit 1
+  ;;
+esac
+
 # --- tier 1: an explicit local declaration -----------------------------------
 declared="$(git config --get "branch.${branch}.base" 2>/dev/null || true)"
 if [ -n "$declared" ]; then

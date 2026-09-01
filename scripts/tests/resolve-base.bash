@@ -150,5 +150,21 @@ if grep -q 'detached' "$err"; then ok; else
   fail_case "the error must say the head is detached: $(cat "$err")"
 fi
 
+# --- A BRANCH NAME GIT OR GH WOULD READ AS AN OPTION IS REFUSED --------------
+# `BRANCH` is a documented override, and check-stack-chain.sh also passes it a
+# name read from the API while walking a chain, so it reaches this script from
+# outside. It is interpolated into a `git config` key and handed to `gh` as a
+# positional argument. Both consumers guard the base name they produce; this
+# guards the name they start from, which is what stops the resolver being the
+# hole underneath them.
+for bad in '--upload-pack=evil' 'has a space' 'refs/../../etc' 'a~1' 'a^' 'a:b'; do
+  if run BRANCH="$bad"; then
+    fail_case "a branch named '$bad' must be refused"
+  else ok; fi
+done
+if grep -q 'not a usable branch name' "$err"; then ok; else
+  fail_case "the error must say why the name is unusable: $(cat "$err")"
+fi
+
 echo "RESULT: $pass passed, $fail failed"
 [[ "$fail" -eq 0 ]]

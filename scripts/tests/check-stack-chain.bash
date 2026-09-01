@@ -38,6 +38,7 @@ git -C "$repo" config user.email t@acme.dev
 git -C "$repo" config user.name Tester
 cp "$repo_root/scripts/git-discipline/check-stack-chain.sh" "$repo/scripts/git-discipline/"
 cp "$repo_root/scripts/git-discipline/resolve-base.sh" "$repo/scripts/git-discipline/"
+cp "$repo_root/scripts/git-discipline/stacking-policy.sh" "$repo/scripts/git-discipline/"
 printf 'x\n' >"$repo/a.txt"
 git -C "$repo" add -A
 git -C "$repo" commit -qm 'feat(#1): the fixture base commit'
@@ -49,6 +50,14 @@ cat >"$work/bin/gh" <<'GH_STUB'
 args="$*"
 case "$args" in
 *"repo view"*)
+  # GH_STUB_FAIL_REPO makes the DEFAULT-BRANCH lookup fail. That is a different
+  # call from the pull request list, and it used to swallow its own failure with
+  # `|| echo main`, so a walk could terminate at the wrong branch and still
+  # report the chain intact.
+  [ -z "${GH_STUB_FAIL_REPO:-}" ] || {
+    echo "gh: could not connect" >&2
+    exit 1
+  }
   printf '%s\n' "${STOP_BRANCH:-main}"
   exit 0
   ;;
@@ -255,6 +264,24 @@ fi
 if grep -q 'not valid JSON' "$out"; then
   fail_case "stderr noise must not be parsed as part of the payload: $(cat "$out")"
 else ok; fi
+
+# --- AN UNREADABLE DEFAULT BRANCH IS A FAILURE, NOT "main" -------------------
+# The same fail-open as the pull request list, in the other call. Assuming
+# `main` is specifically wrong during an epic that promotes a trust anchor: the
+# walk would stop at a branch that is not the top of the stack, or never reach
+# one and be cut off by MAX_DEPTH, and either way could report the chain intact
+# having verified something else.
+if run HEAD_BRANCH=c CHAIN="$THREE_LINKS" EXISTING_BRANCHES="$ALL_EXIST" GH_STUB_FAIL_REPO=1; then
+  fail_case "an unreadable default branch must FAIL, not silently become 'main'"
+else ok; fi
+if grep -q "Refusing to assume" "$out"; then ok; else
+  fail_case "the error must say it refuses to assume a terminus: $(cat "$out")"
+fi
+# STOP_AT stays an explicit override, so a caller that names the terminus needs
+# no lookup and is unaffected by the lookup failing.
+if run HEAD_BRANCH=c CHAIN="$THREE_LINKS" EXISTING_BRANCHES="$ALL_EXIST" STOP_BRANCH=main STOP_AT=main GH_STUB_FAIL_REPO=1; then ok; else
+  fail_case "an explicit STOP_AT must not need the default-branch lookup: $(cat "$out")"
+fi
 
 echo "RESULT: $pass passed, $fail failed"
 [[ "$fail" -eq 0 ]]

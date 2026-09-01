@@ -28,9 +28,16 @@ git_q init -q -b main "$seed"
 # through the caller's own worktree top level, which only means anything if the
 # script is actually tracked in that repository.
 mkdir -p "$seed/scripts/git-discipline" "$seed/scripts/mise"
+# `stacking-policy.sh` is in this list because `setup-git-config.sh` SOURCES it.
+# A fixture missing a sourced fragment fails at runtime, in CI, for a reason
+# that has nothing to do with the case under test, and it fails only in CI: on a
+# developer machine the fragment may already exist in the sandbox from an
+# earlier run, so the omission is invisible locally. That is exactly how this
+# was missed, and it is why the list is spelled out rather than globbed.
 cp "$repo_root/scripts/git-discipline/stack.sh" \
   "$repo_root/scripts/git-discipline/validate-branch-name.sh" \
   "$repo_root/scripts/git-discipline/parse-commit-header.sh" \
+  "$repo_root/scripts/git-discipline/stacking-policy.sh" \
   "$seed/scripts/git-discipline/"
 cp "$repo_root/scripts/mise/setup-git-config.sh" "$seed/scripts/mise/"
 git_q -C "$seed" add -A

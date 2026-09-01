@@ -41,6 +41,18 @@ set -euo pipefail
 remote="${REMOTE:-origin}"
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
+# THE POLICY IS CONSULTED FIRST, through the shared fragment. This gate is
+# stacking machinery too, and an earlier version wired the policy into two of
+# the three consumers and not this one, so `HARNX_STACKING=off` left this gate
+# still acting and "inert" was not true.
+# shellcheck source=scripts/git-discipline/stacking-policy.sh
+# shellcheck disable=SC1091  # sourced at runtime; not followed without -x
+. "$script_dir/stacking-policy.sh"
+if ! stacking_enabled; then
+  echo "check-branch-rebased: stacking is off ($HARNX_POLICY_FILE); nothing to check."
+  exit 0
+fi
+
 branch="${BRANCH:-$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)}"
 if [ -z "$branch" ] || [ "$branch" = "HEAD" ]; then
   echo "::error::check-branch-rebased: cannot determine the current branch (detached HEAD?)." >&2

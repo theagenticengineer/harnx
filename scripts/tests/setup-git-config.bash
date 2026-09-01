@@ -23,9 +23,13 @@ export HOME="$sandbox/home"
 mkdir -p "$HOME"
 
 repo="$sandbox/repo"
-mkdir -p "$repo/scripts/mise"
+mkdir -p "$repo/scripts/mise" "$repo/scripts/git-discipline"
 git -C "$repo" init -q -b main
 cp "$source_script" "$repo/scripts/mise/setup-git-config.sh"
+# The script sources the shared stacking-policy fragment, so every fixture
+# needs it beside the script. A fixture missing it fails for a reason that has
+# nothing to do with the case under test.
+cp "$repo_root/scripts/git-discipline/stacking-policy.sh" "$repo/scripts/git-discipline/"
 
 # --- test 1: the three settings are written, and written locally ---
 bash "$repo/scripts/mise/setup-git-config.sh" >/dev/null
@@ -99,9 +103,10 @@ hook_line="$(grep -E '^postinstall' "$repo_root/mise.toml" || true)"
 
 # --- test 8: the script survives a repository path containing a space ---
 spaced="$sandbox/dir with space/repo"
-mkdir -p "$spaced/scripts/mise"
+mkdir -p "$spaced/scripts/mise" "$spaced/scripts/git-discipline"
 git -C "$sandbox" init -q -b main "$spaced" 2>/dev/null || git init -q -b main "$spaced"
 cp "$source_script" "$spaced/scripts/mise/setup-git-config.sh"
+cp "$repo_root/scripts/git-discipline/stacking-policy.sh" "$spaced/scripts/git-discipline/"
 bash "$spaced/scripts/mise/setup-git-config.sh" >/dev/null
 got="$(git -C "$spaced" config --local --get pull.rebase || true)"
 [[ "$got" == "true" ]] || fail "expected the script to work under a spaced path, got '$got'"
