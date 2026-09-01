@@ -159,6 +159,19 @@ repos:
         entry: scripts/git-discipline/validate-commit-msg.sh
         language: system
         stages: [commit-msg]
+      - id: no-merge-commit
+        name: forbid-merge-commit
+        entry: scripts/git-discipline/forbid-merge-commit.sh
+        language: system
+        always_run: true
+        pass_filenames: false
+        # Two stages, because neither covers the other. `pre-merge-commit` fires
+        # when git is about to create the merge commit itself; `commit-msg`
+        # fires when a human completes a CONFLICTED merge by hand with
+        # `git commit`, a path pre-merge-commit never sees. The script's
+        # MERGE_HEAD test makes the commit-msg wiring a no-op for every ordinary
+        # commit.
+        stages: [pre-merge-commit, commit-msg]
       - id: branch-name
         name: validate-branch-name
         entry: scripts/git-discipline/validate-branch-name.sh

@@ -47,11 +47,22 @@ if ! command -v pre-commit >/dev/null 2>&1; then
   exit 1
 fi
 
+# EVERY STAGE .pre-commit-config.yaml DECLARES, and the list has to be kept in
+# step with it. A hook declared for a stage nobody installed never runs, and
+# nothing reports that: pre-commit is silent about a stage it was not asked to
+# install, and the hook simply does not fire. That is a gate shipping dormant,
+# which is the failure this repository has already paid for once.
+#
+# `pre-merge-commit` is here for the no-merge-commit gate. It fires when git is
+# about to create a merge commit; the same hook is also declared for
+# `commit-msg`, which is the path a human takes when completing a CONFLICTED
+# merge by hand, and which pre-merge-commit never sees.
 pre-commit install \
   --hook-type pre-commit \
   --hook-type commit-msg \
   --hook-type pre-push \
   --hook-type post-checkout \
+  --hook-type pre-merge-commit \
   --overwrite
 
-echo "setup-hooks: git hooks installed for pre-commit, commit-msg, pre-push and post-checkout."
+echo "setup-hooks: git hooks installed for pre-commit, commit-msg, pre-push, post-checkout and pre-merge-commit."

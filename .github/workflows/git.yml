@@ -59,6 +59,25 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: bash scripts/git-discipline/check-commit-authors.sh
+      # The third thing a commit's shape has to satisfy, folded into this same
+      # job for the same reason as the author check above: the floor's required
+      # check set stays at nine, and this job already walks the pull request's
+      # range.
+      #
+      # It is the CI half of the local no-merge-commit hook. The hook is the
+      # fast feedback and is bypassable with `--no-verify`, which this project's
+      # discipline forbids and git does not; this reads the commits themselves,
+      # so a merge commit cannot exist on a branch while CI reports green.
+      #
+      # `if: always()` for the same reason the step above carries it: a bad
+      # commit MESSAGE must not hide a merge commit, or a branch with both
+      # reports one problem per push.
+      - name: Reject merge commits in PR range
+        if: ${{ always() }}
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: bash scripts/git-discipline/ci-check-merge-commits.sh
   branch-name:
     runs-on: ubuntu-latest
     timeout-minutes: 5

@@ -53,14 +53,22 @@ git_q clone -q "$origin" "$clone"
   fail "the sandbox clone has no working tree; check the bare repo's HEAD"
 
 # --- test 1: wrong argument count is a usage error, exit 2 ---
-for args in "" "only-one"; do
+# An ARRAY, not an unquoted string. The point of the loop is to vary the
+# argument COUNT, which an unquoted expansion achieves through word splitting
+# and an array expresses directly. It also stops the floor's `quote-safe-
+# variables` check from having to be silenced here: that check arrived with
+# .shellcheckrc one rung down, measured at zero findings against that tree, and
+# this was the first place above it that needed an answer. Rewriting is the
+# answer; a disable directive would have been a second one.
+for count in 0 1; do
+  args=()
+  [ "$count" -eq 0 ] || args=("only-one")
   set +e
-  # shellcheck disable=SC2086  # deliberate word splitting to vary arg count
-  out="$(bash "$script" $args 2>&1)"
+  out="$(bash "$script" ${args[@]+"${args[@]}"} 2>&1)"
   status=$?
   set -e
-  [[ "$status" -eq 2 ]] || fail "expected exit 2 for args '$args', got $status"
-  [[ "$out" == *"usage: git stack"* ]] || fail "expected usage text for args '$args'"
+  [[ "$status" -eq 2 ]] || fail "expected exit 2 for $count argument(s), got $status"
+  [[ "$out" == *"usage: git stack"* ]] || fail "expected usage text for $count argument(s)"
 done
 
 # --- test 2: malformed arguments are refused before any git command runs ---

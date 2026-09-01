@@ -12,7 +12,13 @@ mise exec -- pre-commit install
 mise exec -- pre-commit install --hook-type commit-msg
 mise exec -- pre-commit install --hook-type post-checkout
 mise exec -- pre-commit install --hook-type pre-push
+mise exec -- pre-commit install --hook-type pre-merge-commit
 ```
+
+Those five commands are a FALLBACK, not the primary path. `mise install` runs
+`scripts/mise/setup-hooks.sh` from its `postinstall` hook and installs all five
+stages for you; they are written out here for the case where somebody needs to
+repair the hooks without a full install.
 
 Then fill `.harnx/instance-config.toml`. This is **not optional**: until
 `identity_policy` names a real policy, the git-identity gate FAILS every
