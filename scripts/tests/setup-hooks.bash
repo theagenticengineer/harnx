@@ -80,7 +80,29 @@ fi
 # commit-msg, pre-push and post-checkout hooks. Installing only pre-commit here
 # would leave three stages silently uninstalled after a rebase onto it, which
 # is a gate that reports nothing rather than one that fails.
-for hook in pre-commit commit-msg pre-push post-checkout; do
+# DERIVED FROM THE CONFIG, not restated. A hook declared for a stage nobody
+# installs never runs, and nothing reports it: pre-commit is silent about a
+# stage it was not asked to install. A hand-kept list here would go stale the
+# first time a hook is added for a new stage, which is exactly how the
+# pre-merge-commit gate was about to ship dormant.
+# `pre-commit` is UNIONED IN unconditionally, not only when some hook spells it
+# out. It is pre-commit's implicit default stage, so a config where every hook
+# relied on that default would derive an empty set here and this loop would
+# quietly verify nothing. That cannot happen in this repository today, because
+# scripts/tests/hook-stages.bash requires every hook to declare its stage, but a
+# derivation whose correctness depends on a DIFFERENT suite's assertion is one
+# bad refactor away from being vacuous, and vacuous is the failure this whole
+# check exists to catch.
+declared_stages="$( (
+  printf 'pre-commit\n'
+  grep -oE '^        stages: \[[^]]*\]' "$repo_root/.pre-commit-config.yaml" |
+    sed -e 's/^        stages: \[//' -e 's/\]$//' -e 's/,/ /g' | tr ' ' '\n'
+) |
+  grep -v '^$' | sort -u)"
+if [ -n "$declared_stages" ]; then ok; else
+  fail_case "could not read any stages from .pre-commit-config.yaml"
+fi
+for hook in $declared_stages; do
   if grep -q -- "--hook-type $hook" "$calls"; then ok; else
     fail_case "hook type '$hook' must be installed: $(cat "$calls")"
   fi

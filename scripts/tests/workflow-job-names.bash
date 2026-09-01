@@ -148,5 +148,28 @@ else
   fail_case "the expiry-warning step must be continue-on-error, or a lapsing token reads as a broken pipeline"
 fi
 
+# --- NO WORKFLOW HARD-CODES THE DEFAULT BRANCH IN ITS CONCURRENCY GUARD ------
+# `cancel-in-progress` is meant to protect the branch of record from having an
+# in-flight run cancelled by the next push. Written as
+# `github.ref != 'refs/heads/main'`, it protects a branch NOTHING PUSHES TO
+# during an epic that promotes a trust anchor, and cancels runs on the branch
+# that actually is the default. That happened here, and a cancelled run reports
+# as "the pipeline did not complete", which reads as a broken gate rather than
+# as a superseded push.
+#
+# `github.event.repository.default_branch` is correct whichever branch that is,
+# including after the #44 cutover, so the assertion is that no workflow compares
+# a ref against a literal branch name for this purpose.
+hardcoded=""
+for wf in "$repo_root"/.github/workflows/*.yml; do
+  grep -qE "cancel-in-progress:.*refs/heads/" "$wf" &&
+    hardcoded="$hardcoded $(basename "$wf")"
+done
+if [ -z "$hardcoded" ]; then
+  pass=$((pass + 1))
+else
+  fail_case "these workflows compare against a hard-coded branch in cancel-in-progress, which protects the wrong branch whenever the default is not that one:$hardcoded"
+fi
+
 echo "RESULT: $pass passed, $fail failed"
 [[ "$fail" -eq 0 ]]

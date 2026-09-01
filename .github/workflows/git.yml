@@ -1,7 +1,14 @@
 name: git
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  # THE DEFAULT BRANCH IS READ FROM THE EVENT, not written as `main`. During an
+  # epic that promotes a trust anchor, the default branch IS that anchor, so a
+  # literal `main` here protects a branch nothing pushes to while cancelling
+  # in-flight runs on the branch of record. That is not hypothetical: it
+  # happened on this repository, and a cancelled run reports as "the pipeline
+  # did not complete", which reads as a broken gate rather than as a superseded
+  # push.
+  cancel-in-progress: ${{ github.ref_name != github.event.repository.default_branch }}
 on:
   pull_request:
     # `edited` is load-bearing, not completeness for its own sake. The default
@@ -59,6 +66,37 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: bash scripts/git-discipline/check-commit-authors.sh
+      # The third thing a commit's shape has to satisfy, folded into this same
+      # job for the same reason as the author check above: the floor's required
+      # check set stays at nine, and this job already walks the pull request's
+      # range.
+      #
+      # It is the CI half of the local no-merge-commit hook. The hook is the
+      # fast feedback and is bypassable with `--no-verify`, which this project's
+      # discipline forbids and git does not; this reads the commits themselves,
+      # so a merge commit cannot exist on a branch while CI reports green.
+      #
+      # `if: always()` for the same reason the step above carries it: a bad
+      # commit MESSAGE must not hide a merge commit, or a branch with both
+      # reports one problem per push.
+      - name: Reject merge commits in PR range
+        if: ${{ always() }}
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: bash scripts/git-discipline/ci-check-merge-commits.sh
+      # The fourth, in the same job and for the same reasons. It walks the range
+      # rather than checking the tip, and the tip is the ONE commit that cannot
+      # carry this defect: a forward reference resolves by the time the file it
+      # names has landed, so the broken commits are always the ones in between.
+      # A tip-only check is exactly what failed to catch this in the earlier
+      # rebuild.
+      - name: Reject forward references in PR range
+        if: ${{ always() }}
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: bash scripts/git-discipline/ci-check-forward-refs.sh
   branch-name:
     runs-on: ubuntu-latest
     timeout-minutes: 5

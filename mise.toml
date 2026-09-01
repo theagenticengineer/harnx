@@ -33,22 +33,66 @@
 # does not install, or installs one this file does not pin.
 
 [settings]
-# Required for the [hooks] table below; mise gates hooks behind it.
+# mise hooks are an explicitly experimental feature, mise's own label rather
+# than a stability guarantee, and mise refuses to run one unless the config opts
+# in here. The opt-in is scoped to this repository's config, not the developer's
+# global one.
+#
+# This flag is broader than the one feature that needs it: mise exposes a single
+# `experimental` switch and no per-feature equivalent (confirmed against
+# `mise settings --all` on the pinned 2025.10.10), so enabling hooks means
+# enabling every experimental behaviour. That is accepted rather than
+# overlooked.
+#
+# What genuinely bounds it: nothing else in this file opts into an experimental
+# feature, so the flag currently unlocks exactly one behaviour that is used.
+#
+# What does NOT bound it: version pinning. Every workflow pins jdx/mise-action,
+# so CI's set of experimental behaviours cannot shift underneath the repository.
+# A developer machine has no such pin.
 experimental = true
 
 [hooks]
-# The gates arrive with the toolchain. `mise install` is the first command
-# anybody runs in a fresh clone or worktree, so hook installation rides it
-# rather than living in a README instruction nobody reads. The script exits
-# quietly in CI, where hooks do nothing.
+# ONE postinstall, running BOTH setup scripts, because TOML permits one key of
+# that name and two rungs each need a hook here. `mise install` is the first
+# command anybody runs in a fresh clone or worktree, so both rides it rather
+# than living in a README instruction nobody reads:
 #
-# CARRIED FROM THE ANCHOR DELIBERATELY. This file replaces the anchor's copy
-# wholesale at the same path, so dropping the block would disarm hook
-# installation for every rung above this one and for every repository harnx
-# generates, silently, with nothing red to show for it. The stages
-# scripts/mise/setup-hooks.sh installs are the same ones this branch's
-# commit-msg, pre-push and post-checkout hooks are declared for.
-postinstall = "bash scripts/mise/setup-hooks.sh"
+#   setup-hooks.sh       installs the git hook types this floor declares
+#                        (pre-commit, commit-msg, post-checkout, pre-push,
+#                        pre-merge-commit). Carried up from the trust anchor:
+#                        this file replaces the anchor's copy wholesale at the
+#                        same path, so dropping it would disarm hook
+#                        installation for every rung above and for every
+#                        repository harnx generates, silently.
+#   setup-git-config.sh  writes the three settings the stacking protocol depends
+#                        on (pull.rebase, push.default, alias.stack), which
+#                        cannot then be forgotten, and which re-running install
+#                        cannot drift because the script only ever overwrites.
+#
+# THE PATHS ARE ABSOLUTE, via {{config_root}}, and that is not cosmetic. A bare
+# `scripts/...` resolves against mise's CWD, and mise runs a hook from wherever
+# mise was invoked, which is not guaranteed to be this repository. The anchor's
+# copy of this block used the relative form; it worked because the hook happens
+# to run from the repository root in the cases exercised so far, not because the
+# form is correct.
+#
+# The interpolation is quoted: {{config_root}} expands to a real filesystem
+# path, and a clone under a directory with a space in it would otherwise
+# word-split into two arguments and fail with a confusing "No such file".
+#
+# Caveat worth knowing rather than rediscovering: mise will not run hooks from
+# an untrusted config, so a freshly created worktree needs `mise trust` once
+# before `mise install` will fire these.
+#
+# CI needs no such step, and it is worth saying so rather than leaving the
+# question open: jdx/mise-action sets MISE_TRUSTED_CONFIG_PATHS to the workspace
+# before installing, so the checkout is already trusted and the hooks run.
+# Confirmed in a real run, which logs both the trust assignment and the script's
+# own line:
+#   Setting MISE_TRUSTED_CONFIG_PATHS=/home/runner/work/harnx/harnx
+#   setup-git-config: configured pull.rebase, push.default and alias.stack ...
+postinstall = 'bash "{{config_root}}/scripts/mise/setup-hooks.sh" && bash "{{config_root}}/scripts/mise/setup-git-config.sh"'
 
 [tools]
 pre-commit = "3.7.1"

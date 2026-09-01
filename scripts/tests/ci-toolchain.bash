@@ -170,6 +170,15 @@ done
 # Two sources, because a suite can name its tool in two ways: literally, as
 # `mise exec -- <tool>`, or by declaring it in a `# requires-tool:` line when the
 # command is built at runtime and no scanner could find it.
+#
+# THIS OVER-APPROXIMATES, DELIBERATELY. A suite that merely QUOTES
+# `mise exec -- <tool>` inside a fixture, without running it, is counted as
+# needing that tool; `check-no-forward-refs.bash` does exactly that, to prove
+# such an entry is not treated as a repository path. Grep cannot tell a fixture
+# string from an invocation, and the error is in the safe direction: the job
+# installs a tool it does not need, rather than missing one it does. Missing one
+# is a CI break that passes on every developer machine, which is the failure
+# that produced this check.
 suite_tools="$( (
   grep -rhoE 'mise exec -- [a-z-]+' "$repo_root"/scripts/tests/*.bash | awk '{print $NF}'
   grep -rhoE '^# requires-tool: [a-z-]+' "$repo_root"/scripts/tests/*.bash | awk '{print $NF}'

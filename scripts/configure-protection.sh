@@ -95,7 +95,8 @@ floor_required_checks() {
     branch-name \
     pr-title \
     pr-body \
-    ai-review-resolved
+    ai-review-resolved \
+    stack-chain-integrity
 }
 
 # THE REPOSITORY MERGE SETTINGS, re-homed here from #34, which could only

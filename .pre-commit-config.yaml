@@ -159,6 +159,31 @@ repos:
         entry: scripts/git-discipline/validate-commit-msg.sh
         language: system
         stages: [commit-msg]
+      - id: no-forward-refs
+        name: check-no-forward-refs
+        entry: scripts/git-discipline/check-no-forward-refs.sh
+        language: system
+        # The whole tree, and the STAGED version of it: the question is whether
+        # every spine reference resolves in the commit about to be made, which
+        # is a property of that commit rather than of the files in it. Passing
+        # filenames would let a commit that DELETES a referenced script pass,
+        # because the deleted file is not among them.
+        always_run: true
+        pass_filenames: false
+        stages: [pre-commit]
+      - id: no-merge-commit
+        name: forbid-merge-commit
+        entry: scripts/git-discipline/forbid-merge-commit.sh
+        language: system
+        always_run: true
+        pass_filenames: false
+        # Two stages, because neither covers the other. `pre-merge-commit` fires
+        # when git is about to create the merge commit itself; `commit-msg`
+        # fires when a human completes a CONFLICTED merge by hand with
+        # `git commit`, a path pre-merge-commit never sees. The script's
+        # MERGE_HEAD test makes the commit-msg wiring a no-op for every ordinary
+        # commit.
+        stages: [pre-merge-commit, commit-msg]
       - id: branch-name
         name: validate-branch-name
         entry: scripts/git-discipline/validate-branch-name.sh
@@ -173,6 +198,16 @@ repos:
         always_run: true
         pass_filenames: false
         stages: [post-checkout]
+      - id: branch-rebased
+        name: check-branch-rebased
+        entry: scripts/git-discipline/check-branch-rebased.sh
+        language: system
+        always_run: true
+        pass_filenames: false
+        # `pre-push`, beside the local-review gate, because both answer the same
+        # question: is this branch fit to leave the machine? Neither is a
+        # property of any file, so neither takes filenames.
+        stages: [pre-push]
       - id: locally-reviewed
         name: check-locally-reviewed
         entry: scripts/ai-review/check-locally-reviewed.sh

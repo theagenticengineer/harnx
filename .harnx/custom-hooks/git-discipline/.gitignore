@@ -1,0 +1,32 @@
+# THE INJECTION SLOT for git-discipline policy.
+#
+# harnx has an opinion about how to stack, and this directory is where a
+# repository overrides it. Whether and how to stack is a property of the project,
+# not of the harness: a repository that never stacks should not have stacking
+# machinery acting on it, and one that stacks differently should not have to
+# patch the floor to say so.
+#
+# WHAT GOES HERE. A single optional file, `policy.sh`, sourced by
+# scripts/mise/setup-git-config.sh and by the stacking checks. It may set:
+#
+#   HARNX_STACKING=off    the stacking machinery takes no action and fails
+#                         nothing. The git settings are not written, and the
+#                         chain gate exits successfully without walking.
+#   HARNX_STACKING=on     the floor's default, and what an absent or empty slot
+#                         means.
+#
+# It is SOURCED, so it can also set anything else those scripts read. That is
+# deliberate: the slot is an escape hatch for a project's own policy, and
+# enumerating in advance every knob a project might want is how a seam becomes a
+# second, worse configuration language.
+#
+# WHY THE CONTENTS ARE IGNORED HERE. In harnx's own repository there is no
+# policy: the floor's default is what harnx uses, and anything appearing in this
+# directory is a local experiment rather than a decision. A repository harnx
+# GENERATES that wants to commit its own policy deletes these two lines.
+#
+# The ignore lives here rather than in the root .gitignore, per
+# .agents/rules/gitignore-scoping.md: a rule lives next to what it ignores, so
+# it moves with the directory and dies with it.
+*
+!.gitignore
