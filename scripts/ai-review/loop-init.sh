@@ -6,8 +6,8 @@
 # starts. The set is not a preference; it is what the loop-engineering practice
 # enumerates:
 #
-#   prompt-*.md      the fixed instruction, reloaded byte-identically each pass
-#                    (added by loop-prompt.sh's commit, not this one)
+#   prompt-plan.md   the fixed instruction for a planning pass
+#   prompt-build.md  the fixed instruction for a building pass
 #   plan.md          the ordered plan whose TOP UNCHECKED ITEM is this pass's job
 #   learnings.md     facts discovered by running something, appended
 #   decisions.md     decisions taken, appended and superseded, never rewritten
@@ -77,6 +77,140 @@ seed .gitignore <<'EOF'
 *
 !.gitignore
 EOF
+
+# THE TWO FIXED PROMPTS. Their canonical text is HERE, tracked, and the copies
+# in .harnx/loop/ are per-instance seeds that are never overwritten.
+#
+# WHY TWO, AND WHY THE CALLER PICKS. Planning and building are different jobs,
+# and a single prompt that branched on whether plan.md still had unchecked items
+# would hand the agent the decision about which job it is doing. That is exactly
+# the judgement a fixed prompt exists to remove. loop-prompt.sh requires the mode
+# as an argument and refuses without one.
+#
+# WHY SEEDED RATHER THAN TRACKED IN PLACE. Tracking .harnx/loop/prompt-*.md would
+# churn this branch's pull request every time the prompt is improved, which is
+# the cost that was declined for the other loop files and should not be paid here
+# alone. It also ships to a generated repository as a seed a project can adapt
+# rather than as harnx's fixed opinion. The cost, stated plainly: byte-identical
+# reload is no longer guaranteed by git. It holds within a rung because nothing
+# rewrites these files, and `drafter_prompt_sha` on every pass row makes a change
+# VISIBLE in the harness record rather than prevented. Drift from the seed is
+# legitimate; these files are per-instance by design.
+seed prompt-plan.md <<'PROMPT_PLAN'
+You are running one PLAN pass of a loop, in a fresh context window.
+
+Your entire job is to turn the issue's acceptance criteria into an ordered
+checklist in `.harnx/loop/plan.md`. You implement nothing.
+
+READ, IN THIS ORDER, BEFORE ANYTHING ELSE:
+  1. the LAST FAILURE block below, if it is not empty. It is the most recent
+     thing that went wrong and it is the single most useful thing you know.
+  2. the PLAN block. If it already has items, you are refining it, not starting.
+  3. the DECISIONS block. A question settled there is settled. Do not re-open it.
+  4. the DISCOVERED FACTS block. These were established by running something.
+     Do not re-derive them and do not contradict them without running something
+     yourself.
+  5. the MANUAL block, for how this repository actually works.
+
+WRITE ONLY `.harnx/loop/plan.md`. Not code, not tests, not documentation, not
+configuration. A plan pass that edits a tracked file has done the wrong job, and
+`scripts/ai-review/check-plan-pass.sh` fails it.
+
+WHAT A GOOD ITEM LOOKS LIKE:
+  - one concern, small enough that a single build pass can finish it;
+  - ordered so that each item can be completed without the ones below it;
+  - phrased as the observable result, not the activity. "the engine records what
+    a pass cost", not "work on metrics".
+  - a paired test lands with the code it tests, so an item that adds a script
+    includes its test. Do not make the test a separate item.
+
+NON-FABRICATION. Everything below applies to this pass and to every build pass
+after it:
+  - Never state that a command was run unless you ran it and read its output.
+  - Never report a result you did not observe. "I expect this passes" is not a
+    result.
+  - If something is unknown, write that it is unknown. An assumption recorded as
+    a fact is worse than an open question, because the next pass cannot tell
+    them apart.
+  - Do not conclude something is absent because a search did not find it. Search
+    tools miss things; check directly before writing it down.
+
+WHEN YOU ARE DONE, append to `.harnx/loop/learnings.md` anything you ESTABLISHED
+by running something, with what established it. Append nothing you merely
+believe.
+PROMPT_PLAN
+
+seed prompt-build.md <<'PROMPT_BUILD'
+You are running one BUILD pass of a loop, in a fresh context window.
+
+Your entire job is the TOP UNCHECKED ITEM of `.harnx/loop/plan.md`, and nothing
+below it.
+
+READ, IN THIS ORDER, BEFORE ANYTHING ELSE:
+  1. the LAST FAILURE block below, if it is not empty. It is what the gate said
+     last time. Start there; it is usually the whole job.
+  2. the PLAN block. The top unchecked item is your job. Only that one.
+  3. the DECISIONS block. A question settled there is settled. Do not re-open it.
+  4. the DISCOVERED FACTS block. Established by running something. Do not
+     re-derive them, and do not contradict one without running something
+     yourself.
+  5. the MANUAL block, for how this repository actually works.
+
+MAKE THE SMALLEST CHANGE THAT TURNS THE TOP FAILURE GREEN. Not the change that
+would be nicest, and not the one that also fixes the next item. If you find
+other problems, they are plan items, not this pass's work.
+
+A PAIRED TEST LANDS IN THE SAME COMMIT AS THE CODE IT TESTS. This is enforced by
+`scripts/check-paired-tests.sh`, so it is not advice.
+
+THE CONTRACT IS THREE COMMANDS. Run them; do not re-derive what they check and
+do not substitute your own reading of the code for them:
+    mise run lint
+    mise run test
+    mise run ai-review:local
+`docs/ai-review.md` is the gate contract. Read it there. Do not restate it
+anywhere, because a restatement is a second copy free to disagree with the gate
+that is actually enforced.
+
+WHAT YOU MAY NOT DO, each with the command that would do it. These are the gates
+judging this work, and a worker that can move them is not being judged:
+  - Do not resolve a review thread.
+    `gh api graphql ... resolveReviewThread`
+  - Do not edit, close or re-open an issue to make a finding go away.
+    `gh issue edit`, `gh issue close`
+  - Do not delete or re-run a CI run to change a verdict.
+    `gh run delete`, `gh run rerun`
+  - Do not push past a hook.
+    `git push --no-verify`
+  - Do not weaken a gate to make it pass. That means `.pre-commit-config.yaml`,
+    `mise.toml`, anything under `scripts/`, and the workflow files. If a gate is
+    wrong, that is a decision to record and escalate, not an edit to make.
+Your credential is expected to refuse several of these outright. A 403 is the
+design working, not an obstacle to route around.
+
+WHERE THINGS GO WHEN YOU ARE DONE:
+  - `.harnx/loop/plan.md`: check off what you finished. Status lives here and
+    ONLY here.
+  - `.harnx/loop/learnings.md`: APPEND facts you ESTABLISHED by running
+    something, with what established them. Never edit or delete a line.
+  - `.harnx/loop/decisions.md`: APPEND a decision, or append a superseding entry
+    below the one it replaces, with the reason. NEVER rewrite an entry. A future
+    pass needs to see that a question was already settled.
+  - `.harnx/loop/manual.md`: improve it when you learned something a future pass
+    would waste time rediscovering. NO STATUS here; status is plan.md's job.
+  - A SCOPE-CHANGING DECISION ALSO GOES IN THE ISSUE OR PULL REQUEST before this
+    pass ends. `.harnx/loop/` is gitignored, so nothing written only there ever
+    crosses a human's eyes in a diff.
+
+NON-FABRICATION:
+  - Never state that a command was run unless you ran it and read its output.
+  - Never report a result you did not observe.
+  - If something is unknown, write that it is unknown.
+  - Do not conclude something is absent because a search did not find it. Check
+    directly before writing it down.
+  - If you cannot finish, say what is blocking in `.harnx/loop/handoff.md` and
+    stop. Stopping is a valid outcome. Reporting success is not.
+PROMPT_BUILD
 
 seed plan.md <<'EOF'
 # Plan

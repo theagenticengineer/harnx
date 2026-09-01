@@ -134,3 +134,22 @@ run = "bash scripts/mise/ai-review-local.sh"
 [tasks."loop:init"]
 description = "seed .harnx/loop/ with the loop's working memory (idempotent)"
 run = "bash scripts/ai-review/loop-init.sh"
+
+# Prints one pass's complete instruction: the fixed prompt for the mode, then
+# the state block with the last failure first. It does not invoke a model; pipe
+# it into one.
+#
+# THE MODE IS REQUIRED and the task refuses without it. `mise run loop:prompt`
+# forwards its trailing arguments to the command, which is what carries
+# plan|build through to the script.
+
+[tasks."loop:prompt"]
+description = "print one pass's prompt plus loop state; requires a mode (plan|build)"
+run = "bash scripts/ai-review/loop-prompt.sh"
+
+# The deterministic half of "a plan pass implements nothing". Run after a plan
+# pass; it compares against the snapshot loop:prompt recorded before it.
+
+[tasks."loop:check-plan"]
+description = "verify the last plan pass changed the plan and nothing else"
+run = "bash scripts/ai-review/check-plan-pass.sh"
