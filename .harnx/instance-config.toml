@@ -1,0 +1,61 @@
+# instance-config.toml
+#
+# Per-repo identity for the harness. TRACKED (committed). Fill it in as the
+# first thing you do after creating a repo from this base.
+#
+# THIS FILE IS NOT OPTIONAL. Until `identity_policy` below names a real
+# policy, `scripts/git-discipline/check-git-identity.sh` FAILS every commit
+# and fails in CI. That is deliberate: a floor that ships with a check
+# switched off, and says nothing about it, verifies nothing while looking like
+# it does, and a green tick that checks nothing is worse than no check at all.
+# So the repo refuses to work until a human states the policy, rather than
+# quietly running without one.
+
+# Human-readable company or project name. Shown to agents; not otherwise
+# load-bearing.
+company_name = "The Agentic Engineer"
+
+# How commit-author emails are restricted. Exactly three states exist, and
+# there is no default:
+#
+#   "CHANGE_ME"  UNARMED. Fails every commit and fails CI. The shipped state.
+#   "public"     Any author email is accepted. For open-source repos taking
+#                outside contributions. A non-empty git user.name and
+#                user.email are still required: "anyone may contribute" does
+#                not mean "a commit may be authored by nobody".
+#   "private"    Only authors matching `allowed_authors` below may commit.
+#
+# An unrecognised value is treated as UNARMED and fails, rather than falling
+# back to something permissive: a one-character typo must not be able to
+# silently disable the gate.
+identity_policy = "private"
+
+# Required when identity_policy = "private"; ignored under "public". Each
+# entry is either
+#   - a bare domain, "acme.org", matching any address on that domain, or
+#   - a full address, "contractor@gmail.com", matching only itself.
+# The "@" is what tells them apart, so one list can mix both.
+#
+# A "private" policy with an empty or absent list is UNARMED, not a
+# lock-everyone-out policy: no author could ever match it, so it is a mistake
+# rather than an intent.
+#
+# When a contributor's email is rejected, the fix is for THEM to reconfigure
+# their git identity (`git config user.email`), not to widen this list.
+# Widening it is a policy change, which is why this file is CODEOWNERS-
+# protected and takes a human review.
+allowed_authors = ["fabio@miranti.net.br"]
+
+# Addresses this repo refuses to accept as a commit author, on top of the
+# structural rules the gate always applies (malformed shapes, dotless domains,
+# and the reserved namespaces of RFC 2606, RFC 6761, RFC 6762, RFC 8375 and
+# ICANN's .internal). Same matching rule as `allowed_authors`: a bare domain
+# bans the whole domain, an address with "@" bans only itself.
+#
+# This is where a SITE-LOCAL canary belongs, rather than in the shipped gate.
+# "Host Identity <leak@host.dev>" is one such canary, a deliberate tripwire
+# identity: if it ever appears as a commit author, an unconfigured machine
+# authored that commit. It is a local convention with no external meaning,
+# and host.dev is a domain registered to a third party, so hardcoding it into
+# the floor would push a private convention into every generated repository.
+denied_authors = ["leak@host.dev"]

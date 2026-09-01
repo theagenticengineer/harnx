@@ -82,7 +82,12 @@ cat >"$CLAUDE_STUB_PROMPT"
   printf -- '--- call %s ---\n' "$n" >>"$CLAUDE_STUB_PROMPTS"
   cat "$CLAUDE_STUB_PROMPT" >>"$CLAUDE_STUB_PROMPTS"
 }
-printf '%s' "${CLAUDE_CODE_OAUTH_TOKEN:-}" >"$CLAUDE_STUB_TOKEN"
+# `-`, not `:-`, so UNSET and SET-BUT-EMPTY are distinguishable. They are
+# different things here: not setting the variable leaves the CLI's own saved
+# login in place, while setting it empty overrides that login with a value that
+# cannot authenticate. A `:-` reading writes "" for both and no assertion can
+# tell them apart.
+printf '%s' "${CLAUDE_CODE_OAUTH_TOKEN-<UNSET>}" >"$CLAUDE_STUB_TOKEN"
 
 line=""
 if [ -n "${CLAUDE_STUB_SEQ:-}" ] && [ -f "$CLAUDE_STUB_SEQ" ]; then
@@ -135,7 +140,11 @@ run() {
   : >"$token_seen"
   printf '0' >"$call_count"
   rm -f "$out"
-  env PATH="$stub_dir:$PATH" \
+  # `-u CLAUDE_CODE_OAUTH_TOKEN`: the developer running this suite very likely
+  # has one exported, and the token cases below assert on what the ENGINE put in
+  # the environment. An inherited value would make them pass for the wrong
+  # reason.
+  env -u CLAUDE_CODE_OAUTH_TOKEN PATH="$stub_dir:$PATH" \
     CLAUDE_STUB_ARGV="$argv" CLAUDE_STUB_PROMPT="$prompt" \
     CLAUDE_STUB_PROMPTS="$prompts" CLAUDE_STUB_CALLS="$call_count" \
     CLAUDE_STUB_TOKEN="$token_seen" \
@@ -369,7 +378,12 @@ if [ "$(jq -c . "$out" 2>/dev/null)" = "[]" ]; then ok; else
 fi
 
 # --- the required inputs are required ----------------------------------------
-for missing in AI_REVIEW_ENGINE_TOKEN AI_REVIEW_DIFF_FILE AI_REVIEW_OUTPUT; do
+# AI_REVIEW_ENGINE_TOKEN is NOT in this list, and the omission is deliberate.
+# The other two are required SET AND NON-EMPTY, because an empty path is a bug
+# with no useful reading. An empty token has one: "use the login the CLI already
+# has", which is how the local runner works on a developer machine. It is
+# covered separately below, in both directions.
+for missing in AI_REVIEW_DIFF_FILE AI_REVIEW_OUTPUT; do
   if run CLAUDE_STUB_RESULT='[]' "$missing="; then
     fail_case "$missing must be required"
   else ok; fi
@@ -828,6 +842,47 @@ fi
 run CLAUDE_STUB_RESULT='[]' AI_REVIEW_DIFF_FILE="$summary_diff" || true
 if grep -q '^+one$' "$prompt"; then ok; else
   fail_case "the code pass must still receive the full diff"
+fi
+
+# --- THE ENGINE TOKEN: unset is an error, empty is a fallback -----------------
+# Unset means a caller forgot to pass it, which is a bug and stays fatal.
+# Invoked directly rather than through `run`, which always sets the variable:
+# `env -u` is the only way to reach the unset case at all.
+if env -u AI_REVIEW_ENGINE_TOKEN -u CLAUDE_CODE_OAUTH_TOKEN PATH="$stub_dir:$PATH" \
+  CLAUDE_STUB_TOKEN="$token_seen" AI_REVIEW_DIFF_FILE="$diff_file" \
+  AI_REVIEW_OUTPUT="$out" bash "$script" >"$log" 2>&1; then
+  fail_case "an UNSET AI_REVIEW_ENGINE_TOKEN must still be an error"
+else ok; fi
+
+# Empty means "use the CLI's own login". The engine must run, and must NOT put
+# an empty CLAUDE_CODE_OAUTH_TOKEN in the environment: that does not mean "no
+# token", it means "the token is the empty string", which overrides a working
+# saved login with something that cannot authenticate.
+if run CLAUDE_STUB_RESULT='[]' AI_REVIEW_ENGINE_TOKEN=; then ok; else
+  fail_case "an EMPTY AI_REVIEW_ENGINE_TOKEN must run, falling back to the CLI's login"
+fi
+if [ "$(cat "$token_seen")" = "<UNSET>" ]; then ok; else
+  fail_case "an empty token must leave CLAUDE_CODE_OAUTH_TOKEN UNSET, not set to empty; the CLI saw: '$(cat "$token_seen")'"
+fi
+# ...AND AN AMBIENT ONE MUST BE CLEARED, not merely left alone. The developer
+# running this very likely has CLAUDE_CODE_OAUTH_TOKEN exported, which is the
+# hazard the AI_REVIEW_ prefix exists to prevent. Inheriting it would send a
+# stale token this engine deliberately does not read straight to the CLI, and
+# the "falling back to your saved login" message would be a lie.
+if env CLAUDE_CODE_OAUTH_TOKEN=ambient-stale-token PATH="$stub_dir:$PATH" \
+  CLAUDE_STUB_ARGV="$argv" CLAUDE_STUB_PROMPT="$prompt" \
+  CLAUDE_STUB_PROMPTS="$prompts" CLAUDE_STUB_CALLS="$call_count" \
+  CLAUDE_STUB_TOKEN="$token_seen" CLAUDE_STUB_RESULT='[]' \
+  AI_REVIEW_ENGINE_TOKEN= AI_REVIEW_DIFF_FILE="$diff_file" \
+  AI_REVIEW_OUTPUT="$out" bash "$script" >"$log" 2>&1 &&
+  [ "$(cat "$token_seen")" = "<UNSET>" ]; then ok; else
+  fail_case "an ambient CLAUDE_CODE_OAUTH_TOKEN must be cleared when no engine token is given; the CLI saw: '$(cat "$token_seen")'"
+fi
+# ...while a real token still reaches the CLI, or the case above would pass on
+# an engine that never passes the token at all.
+if run CLAUDE_STUB_RESULT='[]' AI_REVIEW_ENGINE_TOKEN=real-token &&
+  [ "$(cat "$token_seen")" = "real-token" ]; then ok; else
+  fail_case "a non-empty token must still be given to the CLI, got: $(cat "$token_seen")"
 fi
 
 # --- the output contract is the same whatever the pass ------------------------

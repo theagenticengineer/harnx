@@ -1,38 +1,36 @@
-# TRUST-ANCHOR SUBSET. This is deliberately NOT the repository's full mise.toml.
+# FULL FLOOR TOOLCHAIN, and the single source of truth for tool VERSIONS.
+# Every tool the floor uses is pinned here. Which of them a given job actually
+# installs is decided per job, not by this file.
 #
-# This branch carries only the ai-review security core, so it pins only the
-# tools the ai-review trunk workflow actually executes, and none of the
-# hygiene floor's linters and formatters. The full file, with the complete
-# toolchain and every `mise run` task, lives on the child branch immediately
-# above this one and replaces this one wholesale at the same path.
+# THE CREDENTIALED JOBS INSTALL A SUBSET, and it is worth being precise about
+# what makes that true, because the earlier version of this comment got it
+# wrong in a way that was about to expire.
 #
-# DO NOT "reconcile" this file with the child branch's copy. They are meant to
-# differ. Pulling the floor's toolchain in here would make the job that holds
-# the review engine's API token install ten tools it never runs, for no
-# benefit and a wider supply-chain surface in the one job where that matters
-# most.
+# It used to say the credentialed trunk workflow reads the ANCHOR's two-tool
+# mise.toml rather than this one, so the job holding the review engine's token
+# and the App key installs two tools. The mechanism was real: the trunk
+# workflow is `workflow_run`-triggered, so GitHub resolves it, and everything
+# it checks out, from the DEFAULT branch. But it was true only for as long as
+# the anchor stays the default branch. At cutover `main` inherits THIS file,
+# and the claim silently inverts: those jobs would begin installing everything
+# below. Worse, a repository harnx GENERATES has no anchor at all and is born
+# in exactly that post-cutover shape, so the protection never applied to the
+# repos this floor exists to produce. (The old comment also said "twelve"; the
+# count was eleven, which is the other reason a hand-maintained number in
+# prose is a liability.)
 #
-# What IS load-bearing here, and must survive any edit:
-#   - the claude-code pin and its npm_args (see the comment on it below)
-#   - jq, pinned rather than relying on the runner's preinstalled copy, so the
-#     review scripts parse with a known version
-# Both are runtime dependencies of .github/workflows/ai-review-trunk.yml. Drop
-# either and the trunk workflow fails at runtime, on the default branch, with
-# an error that points nowhere near this file.
+# What makes it true now does not depend on which branch is default: each job
+# in .github/workflows/ai-review-trunk.yml passes `install_args` to
+# jdx/mise-action, naming the tools it actually runs. `review` takes jq and the
+# claude CLI; `context`, `post_findings` and `resolved` take jq alone. Versions
+# still come from here, so there is one place to bump a pin and no second
+# config to drift out of sync.
 #
-# THE THREE PINS BELOW THEM ARE THE ANCHOR'S OWN GATES, and they are here only
-# because per-job `install_args` scoping now exists in ai-review-trunk.yml. The
-# objection this file's header used to make, that growing [tools] would make
-# the job holding the review engine's API token install tools it never runs, is
-# what install_args voids: each job names the subset it installs, so the
-# credentialed jobs still take jq and the claude CLI and nothing else. Verified
-# by scripts/tests/trunk-toolchain.bash, which fails if a job invokes a binary
-# it does not install or installs one this file does not pin.
-#
-# Scoped to the anchor verifying its OWN code, per #37 criterion 43: shellcheck
-# and shfmt over its own shell scripts, and pre-commit to run them plus the
-# paired-test gate. Not vale, not markdownlint, not taplo, not gitleaks. Those
-# are floor gates over floor artifacts and belong on the child branch.
+# That scoping is a security control rather than a speed one: every installed
+# tool's bin directory joins PATH, so a compromised pinned artifact could
+# shadow a binary those scripts do execute, `jq` most of all. It is enforced by
+# scripts/tests/trunk-toolchain.bash, which fails if a job invokes a binary it
+# does not install, or installs one this file does not pin.
 
 [settings]
 # Required for the [hooks] table below; mise gates hooks behind it.
@@ -43,13 +41,27 @@ experimental = true
 # anybody runs in a fresh clone or worktree, so hook installation rides it
 # rather than living in a README instruction nobody reads. The script exits
 # quietly in CI, where hooks do nothing.
+#
+# CARRIED FROM THE ANCHOR DELIBERATELY. This file replaces the anchor's copy
+# wholesale at the same path, so dropping the block would disarm hook
+# installation for every rung above this one and for every repository harnx
+# generates, silently, with nothing red to show for it. The stages
+# scripts/mise/setup-hooks.sh installs are the same ones this branch's
+# commit-msg, pre-push and post-checkout hooks are declared for.
 postinstall = "bash scripts/mise/setup-hooks.sh"
 
 [tools]
-jq = "1.7.1"
 pre-commit = "3.7.1"
+yamllint = "1.35.1"
+actionlint = "1.7.1"
 shellcheck = "0.10.0"
 shfmt = "3.8.0"
+taplo = "0.9.3"
+"npm:markdownlint-cli" = "0.41.0"
+gitleaks = "8.21.2"
+vale = "3.17.1"
+jq = "1.7.1"
+lychee = "0.23.0"
 # npm_args counters mise's npm backend default of --ignore-scripts=true: this
 # package ships its actual binary via a postinstall script that fetches a
 # platform-native optional dependency, so skipping scripts leaves `claude`
@@ -62,28 +74,37 @@ shfmt = "3.8.0"
 # against, whose npm backend did not honor npm_args the same way and hit the
 # exact same "native binary not installed" failure regardless of this
 # setting. The `version: "2025.10.10"` pin on every jdx/mise-action step in
-# .github/workflows/ai-review-trunk.yml (matching the mise release this was
-# verified against) is required alongside this npm_args setting, not
-# optional; either one alone reproduced the CI failure.
+# .github/workflows/*.yml (matching the mise release this was verified
+# against) is required alongside this npm_args setting, not optional; either
+# one alone reproduced the CI failure.
 "npm:@anthropic-ai/claude-code" = { version = "2.1.245", npm_args = "--ignore-scripts=false" }
 
-# Task runner. Only the tasks the TRUST ANCHOR itself runs live here; the
-# floor's hygiene tasks stay on the child branch with the toolchain they drive.
-# `test` exists because criterion 24 of #37 requires the anchor to verify its
-# own scripts: before it, ci.yml's `shell-tests` job echoed a warning and
-# passed, so the branch every workflow_run in the stack resolves from declared
-# eight required checks and verified none of them.
+# Task runner: mise is the single entry point for commands as well as tools, so
+# every floor command runs through the pinned toolchain above, never the
+# developer machine's tools. `mise tasks` lists them; `mise run <name>` runs one.
+#
+# THERE IS ONE LIST OF GATES AND IT IS NOT HERE. `lint` goes through pre-commit
+# rather than invoking the linters itself, so .pre-commit-config.yaml says WHAT
+# the floor checks and this file says WHICH VERSION runs, one axis each.
+#
+# It used to be the other way: five `lint:<type>` tasks each ran a tool over
+# `git ls-files`, while .pre-commit-config.yaml declared the same tools again as
+# hooks. Two lists, and nothing made them agree. A gate added to one was absent
+# from the other, and the hook and CI could enforce different rules while both
+# reporting Passed. Losing per-tool runs costs nothing: `pre-commit run <id>
+# --all-files` is the same thing, from the list that is now the only one.
+#
+# Any convenience wrapper added here must delegate to pre-commit rather than
+# name a tool, or the second list is reborn.
+
+[tasks.lint]
+description = "run every floor gate over the whole tree (the same set CI runs)"
+run = "pre-commit run --all-files --show-diff-on-failure"
 
 [tasks.test]
 description = "run the shell-test suite (scripts/tests/*.bash)"
 run = "bash scripts/mise/test.sh"
 
-# `lint` is every local gate this branch has, so a contributor can run what CI
-# runs without pushing. It goes through pre-commit rather than invoking the
-# linters directly, so there is exactly one list of gates (.pre-commit-config.yaml)
-# and `mise run lint`, the git hook and the CI job can never disagree about
-# what the anchor checks.
-
-[tasks.lint]
-description = "run every local gate over the whole tree (the same set CI runs)"
-run = "pre-commit run --all-files --show-diff-on-failure"
+[tasks."ai-review:local"]
+description = "run the thin local ai-review against the working tree (no CI, no posting)"
+run = "bash scripts/mise/ai-review-local.sh"

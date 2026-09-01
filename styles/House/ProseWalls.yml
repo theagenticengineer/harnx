@@ -1,0 +1,25 @@
+extends: occurrence
+message: >-
+  This block runs to %d words. Break it into shorter paragraphs, or into a
+  list, so a reader can find the one sentence they need.
+link: https://vale.sh/docs/topics/styles/
+level: error
+# `paragraph` AND `list`, not `paragraph` alone. A wall of text does not stop
+# being a wall because it was written as one enormous bullet, and the failure
+# mode this rule exists to prevent (a reader unable to locate the sentence that
+# matters) is if anything worse inside a list, where the bullet promises a
+# scannable item and does not deliver one.
+scope:
+  - paragraph
+  - list
+# 60 words. Chosen against the longest block this repository already considers
+# acceptable rather than against a style guide: the measured worst case in
+# .agents/rules/reproducibility-and-harness.md is 51 words, so 60 leaves room
+# for a genuinely dense paragraph while still refusing a wall. A limit set at or
+# below what the tree already contains would fail on arrival and be raised
+# rather than obeyed.
+max: 60
+# One match per word. `\b\w+\b` counts hyphenated compounds as two, which
+# overcounts slightly and therefore errs toward shorter prose, which is the
+# direction this rule wants to err in.
+token: '\b\w+\b'

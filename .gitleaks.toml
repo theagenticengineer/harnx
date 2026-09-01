@@ -1,0 +1,24 @@
+# gitleaks config: secret scanning for the floor.
+#
+# Extends the tool's built-in rule set rather than replacing it. A hand-written
+# rule list would be a strictly worse scanner that looks like a deliberate one,
+# and every gitleaks release adds providers nobody here would think to add.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Paths whose 'secrets' are documentation, not credentials"
+# THE FLOOR'S OWN DOCUMENTATION DESCRIBES CREDENTIALS, which is the one thing
+# guaranteed to look like a leak. docs/ai-review-setup.md walks a reader through
+# minting a GitHub App key and setting AI_REVIEW_ENGINE_TOKEN, and the test
+# suites construct fake keys to prove the gates reject them. Both must be
+# scannable for a REAL secret, so this allowlists nothing by path.
+#
+# It allowlists by CONTENT instead: the two placeholder shapes this repository
+# writes on purpose. A real key does not match either, because a real key is not
+# the literal word EXAMPLE and is not a PEM banner with nothing between its
+# lines.
+regexes = [
+  '''Iv23liEXAMPLE0+''',
+  '''-----BEGIN [A-Z ]*PRIVATE KEY-----\s*-----END [A-Z ]*PRIVATE KEY-----''',
+]

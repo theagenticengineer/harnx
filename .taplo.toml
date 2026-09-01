@@ -1,0 +1,18 @@
+# taplo config: TOML formatting for the floor.
+#
+# `taplo fmt --check` is a gate, so the format it checks against has to be
+# written down. Without this file the check compares against taplo's built-in
+# defaults, which means a version bump could reformat every TOML file in the
+# repository and the gate would report the tree as unformatted with no change
+# to the tree.
+[formatting]
+# 80 columns, matching how the Markdown and shell in this repository are
+# already written. One wrap width across the tree, so a reader moving between
+# file types does not meet a different one.
+column_width = 80
+# Entries stay in the order the author wrote them. Alphabetising [tools] in
+# mise.toml would scatter the deliberate grouping (the credentialed jobs' two
+# tools sit together and carry a comment saying so) and the comment would then
+# point at the wrong lines.
+reorder_keys = false
+align_entries = false

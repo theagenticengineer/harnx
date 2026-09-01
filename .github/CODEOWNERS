@@ -36,6 +36,8 @@
 /scripts/ @fabioluiz1
 /.github/workflows/ @fabioluiz1
 /.github/CODEOWNERS @fabioluiz1
+/.pre-commit-config.yaml @fabioluiz1
+/.harnx/instance-config.toml @fabioluiz1
 # AGENTS.md is here for a different reason than everything else on this list,
 # and the distinction is worth keeping straight. Every other entry DEFINES or
 # EXECUTES a required check, so editing it can make a gate pass that should
@@ -47,10 +49,36 @@
 # cannot weaken a gate, but it can change what an agent believes it is supposed
 # to do, which is a distinct kind of tampering that the rest of this list does
 # not cover.
+#
+# It must be listed HERE, not only on the trust anchor: AGENTS.md lives on this
+# branch, and GitHub reads CODEOWNERS from a pull request's BASE branch. Every
+# working branch in this epic stacks on this one, so this copy is the one that
+# governs their reviews.
 /AGENTS.md @fabioluiz1
-/.pre-commit-config.yaml @fabioluiz1
-/.harnx/instance-config.toml @fabioluiz1
+# The same reasoning covers .agents/rules/. Each file there is a standalone rule
+# document carrying binding, gate-enforced invariants that agents read before
+# acting, and they state outright that they must not be weakened, bypassed, or
+# routed around. Like AGENTS.md they execute nothing and gate nothing, so a
+# silent edit turns no check green; it rewrites what an agent believes the rules
+# are. Leaving this directory off the list would reopen, for a newer governance
+# surface, exactly the gap the entry above closes.
+/.agents/rules/ @fabioluiz1
 /mise.toml @fabioluiz1
 /.yamllint.yaml @fabioluiz1
 /.vale.ini @fabioluiz1
 /styles/ @fabioluiz1
+# EVERY LINTER'S CONFIG, not only the two that happened to exist first. Each of
+# these decides what a required check actually enforces, so blanking one is the
+# same tamper as blanking .yamllint.yaml: gitleaks with an allowlist matching
+# everything, markdownlint with `default: false`, or taplo with no rules, all
+# leave "pre-commit" reporting green over a gate that stopped checking.
+/.gitleaks.toml @fabioluiz1
+/.markdownlint.yaml @fabioluiz1
+# The IGNORE file too. It is not named by any `--config` flag, because the tool
+# discovers it, which is exactly why it was missed: an ignore file blanks a
+# linter as completely as its config does. `**` in here and markdownlint checks
+# nothing while the check still reports green.
+/.markdownlintignore @fabioluiz1
+/.taplo.toml @fabioluiz1
+/.shellcheckrc @fabioluiz1
+/lychee.toml @fabioluiz1

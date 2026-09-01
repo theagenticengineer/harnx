@@ -1,0 +1,44 @@
+# shellcheck config: the floor's shell rules, stated rather than inherited.
+#
+# Same argument as .markdownlint.yaml and .taplo.toml. "It passes on the
+# defaults" is a coincidence that holds until the next release changes one, and
+# mise.toml pinning the version protects against the tool moving, not against
+# nobody having decided what the rules are.
+
+# Optional checks, ON. Each is off by default, each catches a failure this
+# floor cares about specifically, and each was MEASURED against the tree before
+# being enabled: all three report zero findings today, so they gate future code
+# rather than declaring a backlog on arrival.
+#
+#   check-unassigned-uppercase  a read of an env var that was never assigned.
+#                               The exact shape of "the secret was never set
+#                               and the job passed anyway", which is the
+#                               failure this repository has already shipped
+#                               once.
+#   quote-safe-variables        an unquoted expansion that happens to be safe
+#                               today stops being safe the moment the value
+#                               can contain a space.
+#   deprecate-which             `which` is not portable and lies about
+#                               builtins; `command -v` is the answer.
+enable=check-unassigned-uppercase,quote-safe-variables,deprecate-which
+
+# Follow `source`d files even when the path is built from a variable, so the
+# sourced fragments (finding-key.sh, author-policy.sh, parse-commit-header.sh)
+# are analysed rather than skipped. The scripts that source them still carry a
+# `# shellcheck source=` directive, which is what tells shellcheck WHICH file;
+# this is what lets it read the file once told.
+external-sources=true
+
+# DELIBERATELY NOT ENABLED, with the measurement that decided it:
+#
+#   require-variable-braces  2765 findings. Would require rewriting every
+#                            expansion in the tree, most of them in code this
+#                            rung did not author, for a stylistic gain.
+#   add-default-case         22 findings, and the check is a good one: a `case`
+#                            with no `*)` arm silently does nothing for an
+#                            unexpected value, which is how a gate goes quiet
+#                            instead of failing. It is left off here only
+#                            because arming a rule that is already red is how a
+#                            rule gets relaxed rather than obeyed. Enabling it
+#                            means fixing the 22 first, in the increment that
+#                            owns those files.

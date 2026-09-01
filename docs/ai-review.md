@@ -168,9 +168,10 @@ underscores. It is optional per reviewer: plenty of credentials never expire,
 and there is nothing to warn about for those.
 
 The warning appears in the check run's own body, not only in the workflow log,
-because that is where somebody looking at a pull request will see it. It rides
-on a green verdict as well as a red one. A warning that showed up only once the
-gate was already red would arrive exactly when it is too late.
+because that is where somebody looking at a pull request will see it.
+
+It rides on a green verdict as well as a red one. A warning that showed up only
+once the gate was already red would arrive exactly when it is too late.
 
 A value that is not a real date warns and is skipped. `2026-02-30` is refused
 along with `next tuesday`, since a date that parses is not the same as a date

@@ -1,0 +1,46 @@
+# lychee config: link checking for the floor's Markdown.
+#
+# ARMED, AND OFFLINE. The hook in .pre-commit-config.yaml runs lychee with
+# `--offline`, so it checks the links a change in this repository can actually
+# break: relative paths between files, and heading fragments within them. Those
+# are deterministic, need no network, and are exactly the links a rename
+# silently breaks.
+#
+# EXTERNAL URLS ARE NOT CHECKED BY THE HOOK, deliberately. A gate that depends
+# on other people's servers goes red for reasons that have nothing to do with
+# the change under review, and a gate that does that teaches its readers to
+# ignore it. This floor spends a great deal of effort on the opposite lesson.
+# Run `mise exec -- lychee --config lychee.toml .` by hand, or on a schedule,
+# where a failure means "somebody should look at the links this week" rather
+# than "this pull request is broken".
+#
+# The settings below govern the on-demand network run; the offline hook ignores
+# the ones that concern requests.
+
+# Heading anchors are checked, not only file paths. AGENTS.md links into
+# `.agents/rules/`, and `docs/ai-review-setup.md` carries fifteen headings that
+# other documents point at; without this, a renamed heading breaks every link
+# to it silently. This is also the setting that makes the offline hook worth
+# having at all, since without it an offline run only checks that files exist.
+include_fragments = true
+
+# 20 seconds, then move on. One slow host should not dominate a whole run.
+timeout = 20
+max_retries = 2
+
+# Several hosts rate-limit or refuse unattended requests and answer 403 or 429
+# to anything that is not a browser. Treating those as broken links would be
+# wrong: the page exists, and a human following the link reaches it.
+accept = ["200", "204", "206", "403", "429"]
+
+exclude = [
+  # Example and placeholder hosts that are SUPPOSED not to resolve. The
+  # identity gate rejects addresses on these domains by design, and the
+  # documents explaining that rejection necessarily name them.
+  "^https?://([a-z0-9-]+\\.)*example\\.(com|net|org)",
+  "^https?://([a-z0-9-]+\\.)*(invalid|test|localhost)",
+  # Placeholders inside code samples, meant to be substituted by whoever
+  # copies the sample rather than followed.
+  "OWNER/REPO",
+  "<pinned-sha>",
+]
