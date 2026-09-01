@@ -19,12 +19,30 @@
 # leaves exactly one click to a person.
 #
 # WHY THE PERMISSIONS ARE WHAT THEY ARE: `pull_requests: write`, and nothing
-# else. That is what posting a finding as a resolvable review thread,
-# reopening one that regressed, and upserting the status comment need, and it
-# is deliberately the whole list. The token this App mints is handed to a job
-# that also processes review output, so its scope IS the blast radius if it
-# ever leaks: at `pull_requests: write` the worst case is tampering with this
-# repository's pull request conversations, not with the repository.
+# else. That is what posting a finding as a resolvable review thread and
+# upserting the status comment need, and it is deliberately the whole list. The
+# token this App mints is handed to a job that also processes review output, so
+# its scope IS the blast radius if it ever leaks: at `pull_requests: write` the
+# worst case is tampering with this repository's pull request conversations, not
+# with the repository.
+#
+# WHAT THIS PERMISSION DOES NOT BUY, corrected here because the sentence above
+# used to claim it and that claim is what would stop the next person looking.
+# It said this scope covers "reopening one that regressed". It does not.
+# `unresolveReviewThread` is refused for an App installation token with
+# `Resource not accessible by integration`, and there is no permission to widen:
+# resolving and unresolving review threads are not available to Apps at all.
+#
+# MEASURED, NOT INFERRED. In one run of ai-review-trunk.yml on this repository,
+# the same token created three pull request review comments, which requires
+# exactly this permission, while four `unresolveReviewThread` calls in that same
+# job were refused. One token, one run, writes accepted and unresolve denied.
+# The App's own metadata confirms the grant is present:
+# `gh api /apps/harnx-ai-review` reports `pull_requests: write`.
+#
+# post-findings.sh therefore does not depend on reopening. A recurrence it
+# cannot reopen is posted as a NEW thread, which is unresolved by construction,
+# so check-resolved.sh blocks the merge exactly as a reopened thread would.
 #
 # HANDLING OF SECRET MATERIAL: the private key GitHub returns is written
 # straight from the API response into a file created under a 077 umask. It is

@@ -93,6 +93,20 @@ if [ -n "$payload" ] && [ -f "$payload" ]; then
 fi
 
 case "$*" in
+*unresolveReviewThread*)
+  # REOPENING IS THE ONE TRACKING ACTION WITH NO ALTERNATIVE PATH, and the App
+  # token is refused it outright: `Resource not accessible by integration`,
+  # measured in CI with `pull_requests: write` already granted. The stub answered
+  # every graphql call uniformly, so a reopen could never fail here and the
+  # fallback below could not be tested at all.
+  if [ -n "${GH_STUB_REOPEN_FAIL:-}" ]; then
+    echo "gh: Resource not accessible by integration" >&2
+    exit 1
+  fi
+  exit 0
+  ;;
+esac
+case "$*" in
 *graphql*)
   # An empty default assigned on its own line, NOT inline as
   # ${GH_STUB_THREADS:-{...}}: bash matches the closing brace of a parameter
@@ -453,6 +467,87 @@ if [ ! -s "$attempts" ]; then
   pass=$((pass + 1))
 else
   fail_case "an already-threaded relocated finding must not be posted again"
+fi
+
+# --- A FAILED REOPEN FALLS BACK TO A NEW THREAD ------------------------------
+# `unresolveReviewThread` is refused for this App. Failing the job on that was
+# the old behaviour: it fails closed in the sense that nothing merges, but it
+# also wedges the pipeline permanently, because any finding a human resolved and
+# the model later re-derives has no action available to anyone that clears it.
+# That is a deadlock rather than a gate, and it is what blocked this branch.
+#
+# A new thread is unresolved BY CONSTRUCTION, so check-resolved.sh reads the
+# recurrence exactly as it would a reopened thread. The gate's guarantee
+# survives without the mutation.
+recur_key="$(finding_key "a.sh" "a recurring finding")"
+recur_threads="$(jq -cn --arg b "<!-- ai-review-key:$recur_key -->
+<!-- ai-review-severity:Major -->
+<!-- ai-review-pass:code -->
+**[Major]** a recurring finding" '
+  { pageInfo: { hasNextPage: false, endCursor: null },
+    nodes: [ { id: "T_RESOLVED", isResolved: true,
+               comments: { nodes: [ { databaseId: 77, body: $b } ] } } ] }')"
+jq -cn '[{file: "a.sh", line: 1, side: "RIGHT", title: "a recurring finding", severity: "Major", pass: "code"}]' >"$findings"
+: >"$payloads"
+if env PATH="$stub_dir:$PATH" GH_STUB_ATTEMPTS="$attempts" GH_STUB_ARGS="$args_log" \
+  GH_STUB_PAYLOADS="$payloads" GH_STUB_THREADS="$recur_threads" GH_STUB_REOPEN_FAIL=1 \
+  GH_STUB_ALLOW="line line1 file" \
+  GH_TOKEN=t OWNER=o REPO_NAME=r PR_NUMBER=1 HEAD_SHA=deadbeef \
+  FINDINGS="$findings" bash "$script" >"$out" 2>&1; then
+  pass=$((pass + 1))
+else
+  fail_case "a refused reopen must not fail the run: $(cat "$out")"
+fi
+# The recurrence must actually be posted, or the gate would see nothing and the
+# fallback would be a silent drop, which is worse than the deadlock it replaces.
+if grep -qF 'a recurring finding' "$payloads"; then
+  pass=$((pass + 1))
+else
+  fail_case "the recurrence must be posted as a new thread: $(cat "$payloads")"
+fi
+# Said out loud, as a warning rather than in silence.
+if grep -q 'Posting the recurrence as a new thread' "$out"; then
+  pass=$((pass + 1))
+else
+  fail_case "the fallback must announce itself: $(cat "$out")"
+fi
+
+# IF THE FALLBACK ALSO FAILS, the finding is genuinely untrackable and the run
+# must still fail. Otherwise this change would have traded a deadlock for a
+# silent drop.
+: >"$payloads"
+if env PATH="$stub_dir:$PATH" GH_STUB_ATTEMPTS="$attempts" GH_STUB_ARGS="$args_log" \
+  GH_STUB_PAYLOADS="$payloads" GH_STUB_THREADS="$recur_threads" GH_STUB_REOPEN_FAIL=1 \
+  GH_STUB_ALLOW="none" \
+  GH_TOKEN=t OWNER=o REPO_NAME=r PR_NUMBER=1 HEAD_SHA=deadbeef \
+  FINDINGS="$findings" bash "$script" >"$out" 2>&1; then
+  fail_case "a reopen AND post that both fail must fail the run"
+else
+  pass=$((pass + 1))
+fi
+
+# AN UNRESOLVED THREAD WINS when two carry the same key, which is the state the
+# fallback leaves behind. Taking the resolved one would retry the refused reopen
+# on every later run, which is the loop this exists to break.
+both_threads="$(jq -cn --arg b "<!-- ai-review-key:$recur_key -->
+<!-- ai-review-severity:Major -->
+<!-- ai-review-pass:code -->
+**[Major]** a recurring finding" '
+  { pageInfo: { hasNextPage: false, endCursor: null },
+    nodes: [ { id: "T_RESOLVED", isResolved: true,
+               comments: { nodes: [ { databaseId: 77, body: $b } ] } },
+             { id: "T_LIVE", isResolved: false,
+               comments: { nodes: [ { databaseId: 78, body: $b } ] } } ] }')"
+: >"$payloads"
+if env PATH="$stub_dir:$PATH" GH_STUB_ATTEMPTS="$attempts" GH_STUB_ARGS="$args_log" \
+  GH_STUB_PAYLOADS="$payloads" GH_STUB_THREADS="$both_threads" GH_STUB_REOPEN_FAIL=1 \
+  GH_STUB_ALLOW="line line1 file" \
+  GH_TOKEN=t OWNER=o REPO_NAME=r PR_NUMBER=1 HEAD_SHA=deadbeef \
+  FINDINGS="$findings" bash "$script" >"$out" 2>&1 &&
+  ! grep -q 'Posting the recurrence as a new thread' "$out"; then
+  pass=$((pass + 1))
+else
+  fail_case "with a live thread present, no reopen or repost must be attempted: $(cat "$out")"
 fi
 
 echo "RESULT: $pass passed, $fail failed"

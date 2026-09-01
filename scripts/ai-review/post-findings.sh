@@ -382,8 +382,15 @@ $key"
 $severity_marker
 **[$severity]** $title"
 
+  # AN UNRESOLVED THREAD WINS when more than one carries this key. That happens
+  # after the fallback below has posted a recurrence as a new thread: the
+  # resolved original and the live copy both match. Taking the first would pick
+  # the resolved one and try to reopen it again on every subsequent run, which
+  # is the loop this fallback exists to break.
   match="$(printf '%s' "$threads" | jq -c --arg m "$key_marker" \
-    '[.[] | select(.comments.nodes[0].body // "" | contains($m))][0] // empty')"
+    '[.[] | select(.comments.nodes[0].body // "" | contains($m))]
+     | (map(select(.isResolved == false)) + map(select(.isResolved == true)))
+     | .[0] // empty')"
 
   if [ -n "$match" ]; then
     thread_id="$(printf '%s' "$match" | jq -r '.id')"
@@ -427,9 +434,32 @@ $note"
     fi
     # Regression: the same finding recurred after a human resolved it. Reopen
     # the existing thread instead of posting a duplicate.
+    #
+    # A FAILED REOPEN FALLS BACK TO A NEW THREAD rather than failing the run,
+    # and the distinction matters because the two outcomes are not equally safe.
+    # `unresolveReviewThread` is the ONE tracking action here with no
+    # alternative path, and it is refused outright for this App:
+    # `Resource not accessible by integration`, measured in CI with
+    # `pull_requests: write` already granted in the manifest. Every other
+    # operation in this script works with that token.
+    #
+    # Failing the job was the old behaviour, and it fails CLOSED in the sense
+    # that nothing merges, but it also makes the pipeline unrunnable: any
+    # finding a human resolved and the model later re-derives wedges the job
+    # permanently, with no action available to anyone that clears it. That is
+    # not a gate, it is a deadlock.
+    #
+    # A NEW THREAD IS UNRESOLVED BY CONSTRUCTION, so check-resolved.sh sees the
+    # recurrence and blocks the merge exactly as a reopened thread would. The
+    # gate's guarantee is preserved without depending on a mutation this
+    # credential cannot perform. Only if the fallback ALSO fails is the finding
+    # genuinely untrackable, and that still fails the run.
     if [ "$resolved" = "true" ] && ! reopen_thread "$thread_id"; then
-      echo "::error::could not reopen thread $thread_id for $file (\"$title\"), which recurred after being resolved." >&2
-      failed=1
+      echo "::warning::could not reopen thread $thread_id for $file (\"$title\"), which recurred after being resolved. Posting the recurrence as a new thread instead, which the resolved gate reads the same way." >&2
+      if ! post_comment "$file" "$line" "$side" "$new_body"; then
+        echo "::error::could not reopen thread $thread_id for $file (\"$title\") NOR post the recurrence as a new thread; this finding cannot be tracked." >&2
+        failed=1
+      fi
     fi
     continue
   fi

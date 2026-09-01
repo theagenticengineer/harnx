@@ -191,6 +191,20 @@ happens before the test that sends control to the `else` branch. Reproduced
 with state=open: the else branch is reached and no temp file survives.
 ```
 
-Resolve the thread. No commit was made, so nothing fires: run
-`gh run rerun --failed`. The gate recomputes, finds one resolved Major with a
-written disposition, and goes green.
+Resolve the thread. No commit was made, so nothing fires, and which re-run you
+want depends on which job went red.
+
+**If only `evaluate the resolved gate` failed**, run `gh run rerun --failed`.
+The gate recomputes, finds one resolved Major with a written disposition, and
+goes green. This is the ordinary case.
+
+**If `post findings` also failed, re-run the WHOLE workflow**, with a bare
+`gh run rerun`. `--failed` re-runs only the failed jobs, and the review engine
+is not one of them, so `post findings` replays the findings artifact from the
+original run. Those are the findings taken BEFORE you answered anything, so it
+will try to act on threads you have just resolved and fail in the same place.
+Re-running everything reviews the current state of the pull request, the issue
+and the code, which is what you actually want after editing any of them.
+
+That distinction cost a wasted cycle on this repository's own branch, which is
+why it is written down rather than left to be inferred from the job list.
