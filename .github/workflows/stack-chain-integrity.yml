@@ -1,0 +1,45 @@
+name: stack-chain-integrity
+# A REQUIRED JOB OF ITS OWN, unlike the merge-commit and forward-refs mirrors,
+# which are steps inside git.yml's commit-shape job. Those two ask about the
+# COMMITS in this pull request's range, which that job already walks. This asks
+# about the BRANCHES the pull request sits on top of, which is a different
+# subject, needs a token to read other pull requests, and has nothing to walk
+# the range for.
+#
+# It is therefore a tenth required context, and the commit that lands it also
+# adds it to scripts/configure-protection.sh, per this issue's own rule that a
+# gate declared "required" and named in no branch-protection payload is
+# advisory forever.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+on:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  stack-chain-integrity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      # Reading OTHER branches' pull requests is the whole point: the walk asks
+      # each link in the chain what its own base is. Read-only, and the job
+      # holds nothing else.
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c  # v4.3.0
+        with:
+          version: "2025.10.10"
+          # No tools. The walk uses `gh` and `git`, both present on the runner
+          # image, and installing anything else here would put binaries on PATH
+          # that this job never calls.
+          install_args: ""
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          # The pull request's own head branch, from the event payload rather
+          # than from the checkout: a `pull_request` run checks out a detached
+          # merge commit, so the branch name is not readable from git.
+          HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: bash scripts/git-discipline/check-stack-chain.sh

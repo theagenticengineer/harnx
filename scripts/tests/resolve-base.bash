@@ -69,6 +69,16 @@ if run BASE_FALLBACK=trunk && [ "$(cat "$out")" = "trunk" ]; then ok; else
   fail_case "BASE_FALLBACK must override tier 3, got '$(cat "$out")'"
 fi
 
+# AN EMPTY BASE_FALLBACK DISABLES TIER 3, rather than being substituted away.
+# `${BASE_FALLBACK:-main}` would treat empty as unset and answer `main`, which
+# is not a harmless difference: check-stack-chain.sh asks this question to find
+# out whether a base was DECLARED, and a fallback answer makes every branch that
+# declares nothing look like it disagrees with its pull request. That is exactly
+# what happened on the gate's first live run.
+if run BASE_FALLBACK= && [ -z "$(cat "$out")" ]; then ok; else
+  fail_case "an empty BASE_FALLBACK must disable tier 3, got '$(cat "$out")'"
+fi
+
 # --- tier 2: an open pull request answers ------------------------------------
 if run GH_STUB_BASE=feat-2-below && [ "$(cat "$out")" = "feat-2-below" ]; then ok; else
   fail_case "an open PR's base must win over the fallback, got '$(cat "$out")'"

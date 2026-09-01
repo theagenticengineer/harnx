@@ -124,6 +124,15 @@ fi
 # absorb. Asking for it explicitly costs nothing and removes the dependency.
 git -C "$primary_root" worktree add --track -b "$branch" -- ".worktrees/$branch" "origin/$parent"
 
+# THE BASE IS RECORDED, not left to be inferred from the tracking ref. Tracking
+# says where push and pull go and a contributor can repoint it in one command;
+# `branch.<branch>.base` is a declaration of what this rung is stacked ON, which
+# is what resolve-base.sh's first tier reads and what check-stack-chain.sh
+# compares against the pull request's own base. Without this nothing ever wrote
+# that key, so tier 1 was unreachable and the chain gate's mismatch arm could
+# never fire anywhere.
+git -C "$primary_root" config "branch.${branch}.base" "$parent"
+
 # Verify rather than assume. --track is a request; this asserts it took effect,
 # so a future git or a config nobody remembers setting fails here, loudly, at
 # creation time, instead of silently at the first ripple.

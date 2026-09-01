@@ -36,9 +36,12 @@
 #   BRANCH           optional; the branch to resolve for. Defaults to the
 #                    current one.
 #   BASE_NO_NETWORK  optional; when non-empty, tier 2 is skipped entirely.
-#   BASE_FALLBACK    optional; tier 3's value. Defaults to `main`. Exists so the
-#                    paired test can assert the fallback without depending on
-#                    what this repository's default branch happens to be.
+#   BASE_FALLBACK    optional; tier 3's value. Defaults to `main`. Set it to the
+#                    EMPTY string to disable tier 3 entirely, which is how a
+#                    caller asks "was a base actually declared?" rather than
+#                    "what should I assume it is". Also lets the paired test
+#                    assert the fallback without depending on what this
+#                    repository's default branch happens to be.
 #
 # Writes the resolved base to stdout, and the tier it came from to stderr, so a
 # caller's log says WHICH answer it got rather than only what it was.
@@ -73,6 +76,12 @@ if [ -z "${BASE_NO_NETWORK:-}" ] && command -v gh >/dev/null 2>&1; then
 fi
 
 # --- tier 3: the floor -------------------------------------------------------
-fallback="${BASE_FALLBACK:-main}"
+# `-`, NOT `:-`. An explicitly EMPTY BASE_FALLBACK means "there is no tier 3",
+# which a caller needs when it wants to know whether a base was actually
+# DECLARED rather than guessed: check-stack-chain.sh compares the remembered
+# base against the pull request's, and a fallback of `main` would make every
+# branch that declares nothing look like it disagrees. With `:-` the empty value
+# was substituted away and that is exactly what happened, on the first live run.
+fallback="${BASE_FALLBACK-main}"
 echo "resolve-base: $branch -> $fallback (fallback; no declaration and no open pull request)" >&2
 printf '%s\n' "$fallback"

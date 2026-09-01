@@ -27,6 +27,24 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 script="$repo_root/scripts/configure-protection.sh"
 
+# THE EXPECTED SET IS DERIVED FROM THE SCRIPT, not restated here. A hand-kept
+# copy is how this suite broke when the tenth check landed: it asserted "nine",
+# named the nine, and had to be edited in three places to accept a floor that
+# had legitimately grown. Worse, a hand-kept list can only ever fail SAFE in one
+# direction; if somebody removed a check from the script and from this list
+# together, both would agree and nothing would notice.
+#
+# Sourced through `sh -c` rather than by sourcing the whole script, which would
+# run its argument validation and its API calls.
+FLOOR_CHECKS="$(sed -n '/^floor_required_checks() {/,/^}/p' "$script" |
+  sed -e '1d' -e '$d' -e 's/^ *printf .*$//' -e 's/\\$//' |
+  tr -d ' ' | grep -v '^$' | tr '\n' ' ')"
+# An ARRAY, so the count comes from real elements rather than from word
+# splitting an unquoted expansion.
+read -r -a FLOOR_CHECK_ARRAY <<<"$FLOOR_CHECKS"
+FLOOR_COUNT="${#FLOOR_CHECK_ARRAY[@]}"
+export FLOOR_CHECKS
+
 pass=0
 fail=0
 fail_case() {
@@ -72,8 +90,7 @@ case "$*" in
   if [ -n "${GH_STUB_LIVE+set}" ]; then
     printf '%s\n' "$GH_STUB_LIVE"
   else
-    for c in pre-commit gitleaks actionlint shell-tests commitlint \
-      branch-name pr-title pr-body ai-review-resolved; do
+    for c in $FLOOR_CHECKS; do
       printf '%s|%s\n' "$c" "${GH_STUB_APP_ID-15368}"
     done
   fi
@@ -162,11 +179,12 @@ if printf '%s' "$payload" | jq -e '.required_status_checks | has("contexts") | n
 else
   fail_case "the deprecated contexts list must not be sent alongside checks"
 fi
-# All nine, so a check silently dropped from the floor set is caught here.
-if [ "$(printf '%s' "$payload" | jq '.required_status_checks.checks | length')" = "9" ]; then
+# Every one the script declares, so a check silently dropped from the floor set
+# is caught here.
+if [ "$(printf '%s' "$payload" | jq '.required_status_checks.checks | length')" = "$FLOOR_COUNT" ]; then
   pass=$((pass + 1))
 else
-  fail_case "the floor requires nine checks, payload had $(printf '%s' "$payload" | jq '.required_status_checks.checks | length')"
+  fail_case "the floor requires $FLOOR_COUNT checks, payload had $(printf '%s' "$payload" | jq '.required_status_checks.checks | length')"
 fi
 # --- EVERY entry names the app; a null app_id is the defect being closed ------
 if printf '%s' "$payload" |
@@ -221,10 +239,10 @@ else
   fail_case "a live run must actually PUT the protection"
 fi
 # The payload that reached the API is the same shape the dry run previewed.
-if jq -e '.required_status_checks.checks | length == 9 and all(.app_id == 15368)' "$captured" >/dev/null; then
+if jq -e --argjson n "$FLOOR_COUNT" '.required_status_checks.checks | length == $n and all(.app_id == 15368)' "$captured" >/dev/null; then
   pass=$((pass + 1))
 else
-  fail_case "the live payload must carry the same nine app-pinned checks"
+  fail_case "the live payload must carry the same $FLOOR_COUNT app-pinned checks"
 fi
 if grep -q 'verified live' "$log"; then
   pass=$((pass + 1))

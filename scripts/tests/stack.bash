@@ -284,4 +284,14 @@ set -e
 [[ ! -d "$sep_gitdir/.worktrees" ]] ||
   fail "a rung was created beside the separate git dir"
 
+# --- THE BASE IS RECORDED, not left to be inferred from the tracking ref -----
+# `branch.<branch>.base` is what resolve-base.sh's first tier reads and what
+# check-stack-chain.sh compares against the pull request's own base. Nothing
+# wrote that key before, so tier 1 was unreachable and the chain gate's mismatch
+# arm could never fire anywhere. Tracking is not a substitute: it says where
+# push and pull go, and a contributor can repoint it in one command.
+recorded="$(git -C "$clone" config --get branch.feat-56-via-alias.base || true)"
+[[ "$recorded" == "feat-2-base" ]] ||
+  fail "git stack must record the parent in branch.<branch>.base, got '$recorded'"
+
 echo "PASS: stack.bash"
