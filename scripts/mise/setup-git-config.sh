@@ -50,6 +50,19 @@ git -C "$repo_root" config --local push.default current
 # script through the caller's own worktree top level, so it works identically
 # from the primary clone and from any linked worktree; stack.sh then finds the
 # primary clone itself, which is where the new worktree has to be created.
+# NO TRAILING "$@" IS NEEDED, AND ADDING ONE WOULD BE WRONG. A git alias whose
+# value begins with `!` is a shell COMMAND, and git appends the user's arguments
+# to it, so `git stack a b` runs `bash .../stack.sh a b`. A `"$@"` here would be
+# expanded by the shell git spawns, where it is empty, and then git would append
+# the real arguments after it: harmless today, and a trap the moment anybody
+# reads it as the thing that makes forwarding work.
+#
+# This is recorded in the code rather than only in a resolved review thread
+# because it has been reported as a defect three times, by passes that read the
+# alias and reasoned about it correctly for a shell FUNCTION. Verified live:
+# `git stack` with no arguments prints its usage, and with two it creates the
+# worktree; scripts/tests/stack.bash drives the alias end to end.
+#
 # shellcheck disable=SC2016  # the $(...) must stay LITERAL: it is stored in
 # .git/config and evaluated by git each time the alias runs, from whichever
 # worktree the caller is in. Expanding it here would bake in this one path.

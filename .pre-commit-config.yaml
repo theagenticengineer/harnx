@@ -198,6 +198,16 @@ repos:
         always_run: true
         pass_filenames: false
         stages: [post-checkout]
+      - id: branch-rebased
+        name: check-branch-rebased
+        entry: scripts/git-discipline/check-branch-rebased.sh
+        language: system
+        always_run: true
+        pass_filenames: false
+        # `pre-push`, beside the local-review gate, because both answer the same
+        # question: is this branch fit to leave the machine? Neither is a
+        # property of any file, so neither takes filenames.
+        stages: [pre-push]
       - id: locally-reviewed
         name: check-locally-reviewed
         entry: scripts/ai-review/check-locally-reviewed.sh
