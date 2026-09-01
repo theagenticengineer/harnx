@@ -83,8 +83,24 @@ repos:
         # unreviewed change to a file pre-commit did not name would pass.
         always_run: true
         pass_filenames: false
-        # THE ONLY pre-push HOOK IN THIS FILE, and the stage is the whole
-        # design. At pre-commit it would demand a review of every intermediate
-        # commit in a series, which is neither useful nor affordable; the thing
-        # that must be reviewed is what actually leaves the machine.
+        # AT pre-push, and the stage is the whole design. At pre-commit it
+        # would demand a review of every intermediate commit in a series, which
+        # is neither useful nor affordable; the thing that must be reviewed is
+        # what actually leaves the machine.
+        stages: [pre-push]
+      - id: round-cap
+        name: check-round-cap
+        entry: scripts/ai-review/check-round-cap.sh
+        language: system
+        always_run: true
+        pass_filenames: false
+        # LAST, so its message is the final thing on the screen. It is the rarer
+        # and the more serious of the two: `locally-reviewed` says "run the
+        # review", which is an ordinary step, while this one says "this loop is
+        # not converging and is stopping". Both still run and both still report.
+        #
+        # THE SAME STAGE AS THE REVIEW GATE, deliberately. The way out of the
+        # cap is a clean full local review, which is what the hook above
+        # demands, so the two belong at the same chokepoint: reaching the cap
+        # and being told to review are the same conversation.
         stages: [pre-push]

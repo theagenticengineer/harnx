@@ -92,6 +92,7 @@ GATE_FILES=(
   scripts/ai-review/review-engine.sh
   scripts/ai-review/evaluate-gate.sh
   scripts/ai-review/check-locally-reviewed.sh
+  scripts/ai-review/check-round-cap.sh
   scripts/ai-review/ci-head-shas.sh
   scripts/ai-review/record-pass.sh
   scripts/mise/ai-review-local.sh
