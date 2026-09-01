@@ -11,6 +11,19 @@
 # floor artifacts and pulling them in here would make this branch a second
 # copy of the floor rather than the smallest set that has to be trusted.
 #
+# ONE HOOK HERE IS NOT A LINTER, and it is the reason this file is no longer
+# purely a formatting subset. `locally-reviewed` refuses a push whose tree has
+# not passed a clean full ai-review. It is scoped to the anchor by exactly the
+# same test as everything above: the review engine lives on this branch, so
+# reviewing this branch's own code is this branch verifying itself.
+#
+# It closes a real hole rather than adding symmetry. This branch is the default
+# branch, so every `workflow_run` in the stack resolves its YAML and every
+# script it checks out from here. Until this hook existed the child branch
+# gated its pushes on a clean local review and this one gated its pushes on
+# nothing, which put the widest blast radius in the repository behind the
+# weakest door.
+#
 # EVERY HOOK IS `local`, running the tool mise pinned, rather than a remote
 # hook repository pinning its own copy. The child branch's config uses remote
 # repos for shellcheck and shfmt, which is fine there because that branch has
@@ -59,3 +72,19 @@ repos:
         always_run: true
         pass_filenames: false
         stages: [pre-commit]
+      - id: locally-reviewed
+        name: check-locally-reviewed
+        entry: scripts/ai-review/check-locally-reviewed.sh
+        language: system
+        # always_run with no filenames, for the same reason as the gate above
+        # and one more. The question is about the WHOLE TREE ("was this exact
+        # content reviewed"), so a per-file invocation could not answer it: the
+        # recorded marker is one hash over everything, and a push carrying an
+        # unreviewed change to a file pre-commit did not name would pass.
+        always_run: true
+        pass_filenames: false
+        # THE ONLY pre-push HOOK IN THIS FILE, and the stage is the whole
+        # design. At pre-commit it would demand a review of every intermediate
+        # commit in a series, which is neither useful nor affordable; the thing
+        # that must be reviewed is what actually leaves the machine.
+        stages: [pre-push]

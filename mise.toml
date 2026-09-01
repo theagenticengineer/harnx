@@ -33,6 +33,14 @@
 # and shfmt over its own shell scripts, and pre-commit to run them plus the
 # paired-test gate. Not vale, not markdownlint, not taplo, not gitleaks. Those
 # are floor gates over floor artifacts and belong on the child branch.
+#
+# THE ANCHOR ALSO REVIEWS ITS OWN CODE BEFORE IT PUSHES, which is why the
+# claude-code pin above is load-bearing twice over. It is a runtime dependency
+# of the trunk workflow, and it is also what `ai-review:local` runs on a
+# developer machine to satisfy the pre-push gate below. That gate used to live
+# only on the child branch, which left this branch, the one holding the review
+# engine and the credentials and the default-branch resolution for the whole
+# stack, as the only branch in it whose pushes were reviewed by nothing.
 
 [settings]
 # Required for the [hooks] table below; mise gates hooks behind it.
@@ -73,17 +81,43 @@ shfmt = "3.8.0"
 # own scripts: before it, ci.yml's `shell-tests` job echoed a warning and
 # passed, so the branch every workflow_run in the stack resolves from declared
 # eight required checks and verified none of them.
+#
+# `ai-review:local` is here for the same reason, one level up. The anchor is
+# where the review engine lives, so the anchor is where the review that engine
+# performs has to be runnable. "Only the tasks the anchor itself runs" is
+# satisfied literally: a developer pushing THIS branch is the one who runs it.
 
 [tasks.test]
 description = "run the shell-test suite (scripts/tests/*.bash)"
 run = "bash scripts/mise/test.sh"
 
-# `lint` is every local gate this branch has, so a contributor can run what CI
-# runs without pushing. It goes through pre-commit rather than invoking the
-# linters directly, so there is exactly one list of gates (.pre-commit-config.yaml)
-# and `mise run lint`, the git hook and the CI job can never disagree about
-# what the anchor checks.
+# `lint` is every DETERMINISTIC local gate this branch has, so a contributor can
+# run what CI runs without pushing. It goes through pre-commit rather than
+# invoking the linters directly, so there is exactly one list of gates
+# (.pre-commit-config.yaml) and `mise run lint`, the git hook and the CI job can
+# never disagree about what the anchor checks.
+#
+# "Every gate" is now one word short of true, and the word is the point.
+# `pre-commit run --all-files` runs the `pre-commit` stage, so the
+# `locally-reviewed` hook, which is staged `pre-push`, is not among them. That
+# is deliberate: it gates on a recorded review of the tree, which is a fact
+# about what has already been run and not something a linter pass can establish.
 
 [tasks.lint]
 description = "run every local gate over the whole tree (the same set CI runs)"
 run = "pre-commit run --all-files --show-diff-on-failure"
+
+# The local review, and the thing the `locally-reviewed` pre-push hook in
+# .pre-commit-config.yaml gates on. It reviews the whole working tree against
+# the remote's default branch and records the reviewed tree hash only when a
+# full, non-narrowed pass converges to zero accepted Major findings.
+#
+# It is NOT part of `lint`. `lint` is deterministic, offline and free; this
+# calls a model, takes minutes and costs money. Folding a metered stochastic
+# check into the task CI runs on every push would spend that on every job and
+# make a red `lint` ambiguous between "the formatter disagrees" and "the
+# reviewer found something".
+
+[tasks."ai-review:local"]
+description = "run the thin local ai-review against the working tree (no CI, no posting)"
+run = "bash scripts/mise/ai-review-local.sh"

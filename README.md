@@ -94,7 +94,33 @@ Not trunk-executed, and therefore in scope for the child branch:
 
 - `.github/workflows/ai-review.yml`, which runs from the pull request's own
   branch and is what the pull request author controls
-- `scripts/tests/`, the hygiene floor, and everything `ci.yml` runs
+- the hygiene floor, and everything the child branch's `ci.yml` runs
+
+### "Trunk-executed" is not the only test, and it was never sufficient
+
+The rule above answers *where does this run*, which is the right question for
+anything holding a credential. It is the wrong question for deciding what the
+branch is **about**, and reading it as the only test produced two visible
+errors.
+
+It said `scripts/tests/` belongs to the child branch. This branch has thirty
+test files. They are here because criterion 24 requires the anchor to verify
+its own scripts, and a test executes on a runner and on a laptop rather than in
+the trunk workflow, so *trunk-executed* excludes every one of them.
+
+And it kept the local review runner off this branch. `scripts/mise/ai-review-local.sh`
+runs the review engine, and `scripts/ai-review/check-locally-reviewed.sh`
+refuses a push whose tree that review has not cleared. Neither is invoked by
+the trunk workflow, so *trunk-executed* said child branch. By subject both are
+the AI review, and the engine they drive exists only here. While they sat one
+branch up, this branch, the default branch every `workflow_run` in the stack
+resolves from, was the only branch in the stack whose pushes no review gated.
+
+**So there are two tests, and both apply.** A file is in scope here if the
+trunk executes it, **or** if it is part of the AI review itself. The first is
+about credentials. The second is about cohesion, and it is why
+`review-engine.sh` and the two files that drive it now live on one branch
+rather than two.
 
 ## If you are building the repository generator
 
