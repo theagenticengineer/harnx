@@ -121,3 +121,16 @@ run = "pre-commit run --all-files --show-diff-on-failure"
 [tasks."ai-review:local"]
 description = "run the thin local ai-review against the working tree (no CI, no posting)"
 run = "bash scripts/mise/ai-review-local.sh"
+
+# Seeds .harnx/loop/, the working memory a pass reads when it starts in a clean
+# context window. Idempotent and never overwriting, so it is safe to run at any
+# point in a loop that is already in flight.
+#
+# NOT in [hooks].postinstall, unlike setup-hooks.sh. `mise install` runs in CI
+# and in every repository harnx generates, and seeding a loop nobody asked for
+# is noise in both. A gate that is not installed is not a gate, which is why
+# hooks ride postinstall; loop state that is not seeded is simply not in use.
+
+[tasks."loop:init"]
+description = "seed .harnx/loop/ with the loop's working memory (idempotent)"
+run = "bash scripts/ai-review/loop-init.sh"
