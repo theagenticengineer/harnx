@@ -61,7 +61,27 @@ if [ ! -d "$UNION_INPUTS" ]; then
 fi
 
 shopt -s nullglob
-inputs=("$UNION_INPUTS"/*.json)
+# A FINDINGS FILE IS NOT THE ONLY `.json` IN THIS DIRECTORY ANY MORE. The engine
+# writes a cost sidecar beside its findings, named `<slug>.<pass>.json.usage.json`,
+# and it travels in the same artifact because it is produced in the same step.
+# A bare `*.json` glob therefore hands this script a file that is deliberately
+# not a findings array, and the validation below correctly refuses it, which
+# fails the whole review for a file nobody asked it to merge.
+#
+# Found in CI rather than locally, and it could only be found there: the local
+# runner invokes the engine directly and never calls this script.
+is_findings_file() {
+  case "$1" in
+  *.usage.json) return 1 ;;
+  *) return 0 ;;
+  esac
+}
+
+inputs=()
+for f in "$UNION_INPUTS"/*.json; do
+  is_findings_file "$f" || continue
+  inputs+=("$f")
+done
 if [ "${#inputs[@]}" -eq 0 ]; then
   echo "::error::union.sh: no reviewer produced a findings file in $UNION_INPUTS. A fan-out with no jobs looks exactly like a fan-out whose jobs all passed, so this fails rather than reporting zero findings." >&2
   exit 1
@@ -92,7 +112,18 @@ if [ -n "${EXPECTED_REVIEWERS:-}" ]; then
     # so an unmatched pattern expands to nothing at all, and `$1` is then
     # unbound under `set -u`. `${#arr[@]}` is safe on an empty array; `$1` and
     # `${arr[0]}` are not.
-    produced=("$UNION_INPUTS/$slug".*.json)
+    # THE SIDECAR MUST NOT COUNT AS OUTPUT, and this is the more dangerous half
+    # of the same collision. The engine writes its cost sidecar on EVERY exit,
+    # including the early refusals that produce no findings at all, so a
+    # reviewer whose findings file was missing but whose sidecar was present
+    # would satisfy this count. That is a fail-open in the one check that can
+    # see a reviewer which never ran, which is precisely what the count exists
+    # for.
+    produced=()
+    for f in "$UNION_INPUTS/$slug".*.json; do
+      is_findings_file "$f" || continue
+      produced+=("$f")
+    done
     [ "${#produced[@]}" -gt 0 ] || missing="$missing $slug"
   done <<EOF
 $(printf '%s' "$EXPECTED_REVIEWERS" | jq -r '.[]?' 2>/dev/null || true)

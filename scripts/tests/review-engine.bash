@@ -65,6 +65,39 @@ cat >"$stub_dir/claude" <<'STUB'
 #   <anything>    answer with that text as the result
 # A line past the end of the file, or no file at all, falls back to the flat
 # CLAUDE_STUB_RESULT / CLAUDE_STUB_EXIT / CLAUDE_STUB_IS_ERROR behaviour.
+# THE ENVELOPE THE REAL CLI RETURNS, not the two fields the engine happens to
+# read. It used to emit `{is_error, result}` alone, which meant nothing could
+# assert on the usage sidecar: a test written against that stub would pass
+# whatever the engine did with a field the stub never produced.
+#
+# The numbers below are the shape measured from `claude -p --output-format json`
+# (`usage.input_tokens`, `usage.cache_read_input_tokens`, `total_cost_usd`, and
+# a `modelUsage` keyed by the RESOLVED model name rather than the alias asked
+# for). The values are small and fixed so a sum across N calls is exactly N
+# times one call and an assertion can say so.
+#
+# CLAUDE_STUB_NO_USAGE omits them, which is not a hypothetical: it is any older
+# or differently-configured CLI, and the engine has to record such a call as
+# unmeasured rather than crash or silently drop it.
+envelope() {
+  if [ -n "${CLAUDE_STUB_NO_USAGE:-}" ]; then
+    jq -cn --argjson e "$1" --arg r "$2" '{is_error: $e, result: $r}'
+    return 0
+  fi
+  jq -cn --argjson e "$1" --arg r "$2" '{
+    is_error: $e,
+    result: $r,
+    total_cost_usd: 0.01,
+    usage: {
+      input_tokens: 2,
+      output_tokens: 4,
+      cache_read_input_tokens: 100,
+      cache_creation_input_tokens: 0
+    },
+    modelUsage: {"claude-sonnet-5": {costUSD: 0.01, canonicalModel: "claude-sonnet-5"}}
+  }'
+}
+
 n=1
 if [ -n "${CLAUDE_STUB_CALLS:-}" ]; then
   [ -f "$CLAUDE_STUB_CALLS" ] || printf '0' >"$CLAUDE_STUB_CALLS"
@@ -100,11 +133,11 @@ if [ -n "$line" ]; then
     exit "${line#exit:}"
     ;;
   iserr)
-    jq -cn '{is_error: true, result: "boom"}'
+    envelope true boom
     exit 0
     ;;
   *)
-    jq -cn --arg r "$line" '{is_error: false, result: $r}'
+    envelope false "$line"
     exit 0
     ;;
   esac
@@ -114,9 +147,7 @@ if [ -n "${CLAUDE_STUB_EXIT:-}" ] && [ "$CLAUDE_STUB_EXIT" != 0 ]; then
   echo "claude: simulated transport failure" >&2
   exit "$CLAUDE_STUB_EXIT"
 fi
-jq -cn --arg r "${CLAUDE_STUB_RESULT:-[]}" \
-  --argjson e "${CLAUDE_STUB_IS_ERROR:-false}" \
-  '{is_error: $e, result: $r}'
+envelope "${CLAUDE_STUB_IS_ERROR:-false}" "${CLAUDE_STUB_RESULT:-[]}"
 STUB
 chmod +x "$stub_dir/claude"
 
@@ -139,7 +170,9 @@ run() {
   : >"$prompts"
   : >"$token_seen"
   printf '0' >"$call_count"
-  rm -f "$out"
+  # The sidecar goes too. A stale one from the previous case would let an
+  # assertion about THIS case pass on the last case's numbers.
+  rm -f "$out" "$out.usage.json"
   # `-u CLAUDE_CODE_OAUTH_TOKEN`: the developer running this suite very likely
   # has one exported, and the token cases below assert on what the ENGINE put in
   # the environment. An inherited value would make them pass for the wrong
@@ -893,6 +926,97 @@ run AI_REVIEW_PASS=pr-body AI_REVIEW_SUBJECT="$subject" \
 if jq -e '.[0] | has("file") and has("line") and has("side") and has("severity") and has("reviewer")' "$out" >/dev/null; then ok; else
   fail_case "a drift finding must carry the same fields as a code finding"
 fi
+
+# --- THE COST SIDECAR ---------------------------------------------------------
+# What a pass SPENT, which the findings array has never carried. Every
+# assertion below is against the stub's fixed per-call figures (2 in, 4 out,
+# 100 cache-read, $0.01), so an N-call run must sum to exactly N times those
+# and a wrong accumulation cannot hide behind plausible-looking totals.
+sidecar="$out.usage.json"
+
+run CLAUDE_STUB_RESULT='[]' || true
+if [ -f "$sidecar" ]; then ok; else
+  fail_case "a run must write a usage sidecar beside its findings"
+fi
+if [ "$(jq -r '.calls' "$sidecar")" = "1" ]; then ok; else
+  fail_case "a one-call run must report 1 call, got $(jq -r '.calls' "$sidecar")"
+fi
+if [ "$(jq -c '[.input_tokens, .output_tokens, .cache_read_input_tokens]' "$sidecar")" = "[2,4,100]" ]; then ok; else
+  fail_case "the sidecar must carry the call's tokens, got $(jq -c '[.input_tokens,.output_tokens,.cache_read_input_tokens]' "$sidecar")"
+fi
+if [ "$(jq -r '.total_cost_usd' "$sidecar")" = "0.01" ]; then ok; else
+  fail_case "the sidecar must carry the call's cost, got $(jq -r '.total_cost_usd' "$sidecar")"
+fi
+# The dollar figure is an API-equivalent price, not an amount billed, and the
+# sidecar has to say so in a field rather than leave its reader to assume.
+if [ "$(jq -r '.cost_basis' "$sidecar")" = "modelled-api-equivalent" ]; then ok; else
+  fail_case "the sidecar must label its cost basis"
+fi
+# REQUESTED and RESOLVED are different values and both are recorded. `$model`
+# is the alias asked for; the envelope's modelUsage key is what actually ran.
+if [ "$(jq -r '.model_requested' "$sidecar")" = "sonnet" ] &&
+  [ "$(jq -c '.model_resolved' "$sidecar")" = '["claude-sonnet-5"]' ]; then ok; else
+  fail_case "the sidecar must record the requested alias AND the resolved model, got $(jq -c '{model_requested,model_resolved}' "$sidecar")"
+fi
+
+# EVERY CALL COUNTS, not the last one. Three chunks is the case that would look
+# correct while reporting a third of the spend.
+run CLAUDE_STUB_RESULT='[]' AI_REVIEW_DIFF_FILE="$big_diff" AI_REVIEW_MAX_DIFF_BYTES=500 || true
+if [ "$(jq -r '.calls' "$sidecar")" = "3" ] &&
+  [ "$(jq -c '[.input_tokens, .output_tokens]' "$sidecar")" = "[6,12]" ]; then ok; else
+  fail_case "a three-chunk run must sum three calls, got $(jq -c '{calls,input_tokens,output_tokens}' "$sidecar")"
+fi
+
+# A RETRY IS REAL SPEND. The corrective retry fires when a response is not a
+# findings array; the run succeeds, and it cost two calls, not one.
+printf 'not an array\n[]\n' >"$seq_file"
+run CLAUDE_STUB_SEQ="$seq_file" || true
+if [ "$(jq -r '.calls' "$sidecar")" = "2" ] &&
+  [ "$(jq -r '.total_cost_usd' "$sidecar")" = "0.02" ]; then ok; else
+  fail_case "the corrective retry must be counted, got $(jq -c '{calls,total_cost_usd}' "$sidecar")"
+fi
+
+# AN ERROR ENVELOPE IS STILL A CALL THAT WAS MADE. Counting it is why
+# record_usage sits upstream of the is_error check rather than after it.
+printf 'iserr\n' >"$seq_file"
+run CLAUDE_STUB_SEQ="$seq_file" || true
+if [ "$(jq -r '.calls' "$sidecar")" = "1" ]; then ok; else
+  fail_case "an is_error response must still be counted as a call, got $(jq -r '.calls' "$sidecar")"
+fi
+
+# A CLI THAT REPORTS NO USAGE is recorded as unmeasured rather than dropped or
+# fatal. Dropping it would shrink the call count while leaving the token sums
+# plausible, which is the combination a reader cannot detect.
+run CLAUDE_STUB_RESULT='[]' CLAUDE_STUB_NO_USAGE=1 || true
+if [ "$(jq -c '[.calls, .unmeasured_calls, .input_tokens]' "$sidecar")" = "[1,1,0]" ]; then ok; else
+  fail_case "a usage-less envelope must count as an unmeasured call, got $(jq -c '{calls,unmeasured_calls,input_tokens}' "$sidecar")"
+fi
+
+# THE SIDECAR EXISTS ON EVERY EXIT, including the ones that never call the
+# model. Without this its reader could not tell "spent nothing" from "did not
+# report", which are different facts.
+: >"$stub_dir/empty-diff.txt"
+run CLAUDE_STUB_RESULT='[]' AI_REVIEW_DIFF_FILE="$stub_dir/empty-diff.txt" || true
+if [ -f "$sidecar" ] && [ "$(jq -c '[.calls, .total_cost_usd]' "$sidecar")" = "[0,0]" ]; then ok; else
+  fail_case "an early exit must still leave a zeroed sidecar, got $(cat "$sidecar" 2>/dev/null || echo ABSENT)"
+fi
+# ...and so does a refusal, which exits 1 well before the temp files the old
+# trap was attached to were ever allocated.
+run CLAUDE_STUB_RESULT='[]' AI_REVIEW_PASS=nonsense || true
+if [ -f "$sidecar" ] && [ "$(jq -r '.calls' "$sidecar")" = "0" ]; then ok; else
+  fail_case "a refused run must still leave a zeroed sidecar, got $(cat "$sidecar" 2>/dev/null || echo ABSENT)"
+fi
+
+# A REFUSAL MUST STILL EXIT NON-ZERO WITH THE SIDECAR'S EXIT TRAP INSTALLED,
+# and this assertion exists because that regression already happened once.
+# An EXIT trap makes bash report 0 for an exit caused by a `${VAR:?}`
+# expansion, so the engine printed its refusal and then exited 0. Asserted on
+# the exit CODE specifically: the message was correct throughout, and a test
+# that grepped stderr would have passed while every caller read the refused
+# review as a clean pass.
+if run CLAUDE_STUB_RESULT='[]' AI_REVIEW_PASS=issue-body; then
+  fail_case "a refusal must exit non-zero even with the sidecar's EXIT trap installed"
+else ok; fi
 
 echo "RESULT: $pass passed, $fail failed"
 [[ "$fail" -eq 0 ]]

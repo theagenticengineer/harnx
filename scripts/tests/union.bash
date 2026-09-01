@@ -267,5 +267,36 @@ for missing in UNION_INPUTS AI_REVIEW_OUTPUT; do
   if [ "$st" -ne 0 ]; then ok; else fail_case "$missing must be required"; fi
 done
 
+# --- THE COST SIDECAR IS NOT A FINDINGS FILE ---------------------------------
+# The engine writes `<slug>.<pass>.json.usage.json` beside its findings, and it
+# travels in the same artifact because the same step produces it. A bare
+# `*.json` glob hands this script a file that is deliberately not a findings
+# array, the validation correctly refuses it, and the whole review fails over a
+# file nobody asked it to merge. That is what happened in CI on the commit that
+# introduced the sidecar; it could not happen locally, because the local runner
+# calls the engine directly and never calls this script.
+in_dir="$(mktemp -d)"
+out_file="$in_dir/union.json"
+printf '%s' '[{"file":"a.sh","line":1,"side":"RIGHT","title":"a real finding","severity":"Major","reviewer":"claude"}]' >"$in_dir/claude.code.json"
+printf '%s' '{"calls":1,"input_tokens":2,"output_tokens":3,"total_cost_usd":0.01}' >"$in_dir/claude.code.json.usage.json"
+if UNION_INPUTS="$in_dir" AI_REVIEW_OUTPUT="$out_file" bash "$script" >/dev/null 2>&1 &&
+  [ "$(jq -r 'length' "$out_file")" = "1" ]; then ok; else
+  fail_case "a usage sidecar beside the findings must be ignored, not refused as a bad findings file"
+fi
+
+# THE SIDECAR MUST NOT SATISFY THE REGISTRY COUNT EITHER, and this is the more
+# dangerous half. The engine writes a sidecar on EVERY exit, including the early
+# refusals that produce no findings, so a reviewer whose findings file is absent
+# but whose sidecar is present would look like it produced output. That is a
+# fail-open in the one check that can see a reviewer which never ran.
+rm -f "$in_dir"/*.json
+printf '%s' '[]' >"$in_dir/claude.code.json"
+printf '%s' '{"calls":0}' >"$in_dir/gemini.code.json.usage.json"
+if UNION_INPUTS="$in_dir" AI_REVIEW_OUTPUT="$out_file" \
+  EXPECTED_REVIEWERS='["claude","gemini"]' bash "$script" >/dev/null 2>&1; then
+  fail_case "a reviewer with only a sidecar must NOT count as having produced findings"
+else ok; fi
+rm -rf "$in_dir"
+
 echo "RESULT: $pass passed, $fail failed"
 [[ "$fail" -eq 0 ]]

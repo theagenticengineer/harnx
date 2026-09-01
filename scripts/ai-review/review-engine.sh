@@ -120,6 +120,122 @@ set -euo pipefail
 model="${AI_REVIEW_MODEL:-sonnet}"
 reviewer="${AI_REVIEW_REVIEWER:-claude}"
 
+# WHAT A PASS COST, recorded as a sidecar next to the findings.
+#
+# The findings array answers "what did the review find". Nothing answered "what
+# did it spend", so no loop built on this engine could see its own cost, and a
+# stop condition calibrated against cost had nothing to read.
+#
+# ONE FILE PER CALL IS ACCUMULATED, then folded once at exit. The engine calls
+# the CLI more than once per pass: once per diff chunk, again for the corrective
+# retry when a response is not a findings array, and again per transport
+# attempt. Recording only the last call would report a multi-chunk review as
+# costing what its final chunk cost.
+#
+# `usage_log` and the trap are set up HERE, before the first path that can exit,
+# rather than beside the other temp files further down. Nine early exits sit
+# between this line and those, and a sidecar that exists only when the engine
+# got far enough to allocate its scratch files is a sidecar its reader has to
+# treat as optional, which means never being able to distinguish "spent nothing"
+# from "did not report". Every exit now leaves one.
+usage_log="$(mktemp)"
+# Declared empty so the exit handler can name them under `set -u` before the
+# assignments further down have run.
+chunk_dir=""
+prompt_file=""
+raw=""
+raw_err=""
+
+# Called once per SUCCESSFUL CLI invocation, from inside call_engine, which is
+# the single point every invocation passes through.
+#
+# Deliberately upstream of the `.is_error` check in review_chunk rather than
+# after it. An error envelope is still a call that was made and still carries
+# the usage of whatever ran before it failed, so counting it is the honest
+# reading; skipping it would under-report the runs that cost the most.
+#
+# A malformed envelope is recorded as an UNMEASURED call rather than dropped.
+# Dropping it would keep the token sums plausible while silently shrinking the
+# call count, which is the one number a reader uses to sanity-check the rest.
+#
+# WHAT IS NOT COUNTED, stated so nobody reads `calls` as more than it is: a
+# transport failure exits non-zero with no envelope on stdout, so it may have
+# spent tokens that no sidecar can see. `calls` therefore means "invocations
+# whose cost was measured", not "invocations attempted", and on a run that
+# retried through timeouts the real spend is higher than what is reported here.
+record_usage() {
+  local line
+  if line="$(jq -c '{
+    input_tokens: (.usage.input_tokens // 0),
+    output_tokens: (.usage.output_tokens // 0),
+    cache_read_input_tokens: (.usage.cache_read_input_tokens // 0),
+    cache_creation_input_tokens: (.usage.cache_creation_input_tokens // 0),
+    total_cost_usd: (.total_cost_usd // 0),
+    models: (.modelUsage // {} | keys),
+    unmeasured: ((.usage | type) != "object")
+  }' "$raw" 2>/dev/null)" && [ -n "$line" ]; then
+    printf '%s\n' "$line" >>"$usage_log"
+  else
+    printf '%s\n' '{"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"total_cost_usd":0,"models":[],"unmeasured":true}' >>"$usage_log"
+  fi
+}
+
+# THE DOLLAR FIGURE IS MODELLED, NOT BILLED, and the sidecar says so in its own
+# field rather than in a comment only this file's readers see. Under an OAuth
+# login the run is drawn against a subscription, so `total_cost_usd` is the
+# API-equivalent price of the same tokens and not an amount anybody was charged.
+# Tokens are the primary metric for that reason.
+#
+# `model_resolved` is an ARRAY, and it comes from the envelope's own
+# `modelUsage` keys rather than from `$model`. Those are different values:
+# `$model` is the alias that was asked for ("sonnet") and the key is what
+# actually ran ("claude-sonnet-5"). An array because a run that somehow spanned
+# two models must be visible as such; folding it to one string would average
+# across regimes, which is the exact error separate metrics exist to prevent.
+write_usage_sidecar() {
+  local sidecar="${AI_REVIEW_OUTPUT}.usage.json"
+  local empty='{"calls":0,"unmeasured_calls":0,"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"total_cost_usd":0,"cost_basis":"modelled-api-equivalent","model_resolved":[]}'
+  if [ ! -f "$usage_log" ]; then
+    printf '%s\n' "$empty" >"$sidecar" 2>/dev/null || true
+    return 0
+  fi
+  jq -s --arg mr "$model" --arg pk "${pass_kind:-unknown}" --arg rv "$reviewer" '{
+    calls: length,
+    unmeasured_calls: ([.[] | select(.unmeasured == true)] | length),
+    input_tokens: (map(.input_tokens) | add // 0),
+    output_tokens: (map(.output_tokens) | add // 0),
+    cache_read_input_tokens: (map(.cache_read_input_tokens) | add // 0),
+    cache_creation_input_tokens: (map(.cache_creation_input_tokens) | add // 0),
+    total_cost_usd: (map(.total_cost_usd) | add // 0),
+    cost_basis: "modelled-api-equivalent",
+    model_requested: $mr,
+    model_resolved: (map(.models[]) | unique),
+    pass: $pk,
+    reviewer: $rv
+  }' "$usage_log" >"$sidecar" 2>/dev/null ||
+    printf '%s\n' "$empty" >"$sidecar" 2>/dev/null || true
+}
+
+# `status` IS CAPTURED FIRST AND RE-ASSERTED LAST, and this is not defensive
+# padding. An EXIT trap whose final command succeeds makes the script exit 0
+# regardless of what it was exiting with: measured here, a `pr-body` pass with
+# no AI_REVIEW_SUBJECT printed its refusal and then exited 0, so every caller
+# would have read a refused review as a clean one.
+#
+# The previous trap could not have this bug because it was installed below all
+# nine early exits and therefore never ran on any of them. Moving the trap up to
+# guarantee the sidecar is what put those paths through a handler for the first
+# time. scripts/tests/review-engine.bash already asserted the refusal, and
+# failed on it, which is the only reason this is a comment and not a defect.
+on_exit() {
+  local status=$?
+  write_usage_sidecar
+  [ -z "$chunk_dir" ] || rm -rf "$chunk_dir"
+  rm -f "$prompt_file" "$raw" "$raw_err" "$usage_log"
+  exit "$status"
+}
+trap on_exit EXIT
+
 # REFUSED, not defaulted. Quietly reviewing the code when somebody asked for a
 # drift check would report a pass nobody requested, against a question nobody
 # answered.
@@ -133,7 +249,29 @@ code | issue-body | pr-body) ;;
   ;;
 esac
 if [ "$pass_kind" != "code" ]; then
-  : "${AI_REVIEW_SUBJECT:?AI_REVIEW_SUBJECT is required for a $pass_kind pass}"
+  # AN EXPLICIT CHECK, NOT `${AI_REVIEW_SUBJECT:?...}`, and the difference is
+  # load-bearing rather than stylistic. When bash exits because a `:?`
+  # expansion found an unset variable, `$?` inside the EXIT trap is 0, not 1.
+  # Measured directly: a five-line script with `trap 'echo $?' EXIT` and a bare
+  # `: "${MISSING:?}"` prints 0 and exits 0. The trap cannot recover the status
+  # because it was never given it, so no amount of capturing and re-asserting
+  # in the handler fixes this.
+  #
+  # It became reachable when the usage sidecar moved the EXIT trap above this
+  # line. Before that the trap was installed below every early refusal and none
+  # of them ever ran a handler. The symptom is the worst shape available: the
+  # engine printed "refusing to report that a description matches when it was
+  # never read" and then exited 0, so a caller would have recorded a refused
+  # review as a clean pass.
+  #
+  # The three `:?` checks at the top of this file are unaffected and stay as
+  # they are: they run BEFORE the trap is installed, and they have to, because
+  # the sidecar's path is derived from AI_REVIEW_OUTPUT.
+  if [ -z "${AI_REVIEW_SUBJECT:-}" ]; then
+    echo "ai-review/review-engine.sh: AI_REVIEW_SUBJECT is required for a $pass_kind pass." >&2
+    echo '[]' >"$AI_REVIEW_OUTPUT"
+    exit 1
+  fi
   if [ ! -f "$AI_REVIEW_SUBJECT" ]; then
     echo "ai-review/review-engine.sh: the $pass_kind pass has no description to review at $AI_REVIEW_SUBJECT. Refusing to report that a description matches when it was never read." >&2
     echo '[]' >"$AI_REVIEW_OUTPUT"
@@ -358,11 +496,13 @@ PROMPT
 # the budget cannot be split at all; that chunk goes out oversized and says so,
 # because reporting "this one file may have been truncated" is worth more than
 # silently truncating it.
+# ASSIGNED here, but the EXIT trap that removes them was installed near the top
+# of the file, alongside the usage sidecar it also writes. Re-setting it here
+# would replace that handler and drop the sidecar on every path below.
 chunk_dir="$(mktemp -d)"
 prompt_file="$(mktemp)"
 raw="$(mktemp)"
 raw_err="$(mktemp)"
-trap 'rm -rf "$chunk_dir"; rm -f "$prompt_file" "$raw" "$raw_err"' EXIT
 
 max_bytes="${AI_REVIEW_MAX_DIFF_BYTES:-409600}"
 case "$max_bytes" in
@@ -568,6 +708,7 @@ call_engine() {
     if env ${engine_env[@]+"${engine_env[@]}"} \
       claude -p --output-format json --model "$model" --tools "" \
       <"$prompt_file" >"$raw" 2>"$raw_err"; then
+      record_usage
       return 0
     fi
     if [ "$attempt" -ge "$max_attempts" ]; then

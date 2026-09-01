@@ -74,7 +74,10 @@ idx="$(mktemp)"
 # content below rather than pointing at the ledger file itself. See the
 # assignment for why the difference matters.
 handled_file="$(mktemp)"
-trap 'rm -f "$diff_file" "$out" "$idx" "$handled_file"' EXIT
+# `$out.usage.json` is the engine's cost sidecar, written beside its findings.
+# Named here rather than left to the engine because the engine cannot clean up a
+# file its caller is still going to read.
+trap 'rm -f "$diff_file" "$out" "$out.usage.json" "$idx" "$handled_file"' EXIT
 
 # Build the FULL working-tree content as a real git tree object up front:
 # HEAD plus every staged, unstaged, AND untracked change, via `git add -A`
@@ -200,7 +203,7 @@ printf '%s' "$dismissed" >"$handled_file"
 t0="$(date +%s)"
 crashed=0
 engine_err="$(mktemp)"
-trap 'rm -f "$diff_file" "$out" "$idx" "$handled_file" "$engine_err"' EXIT
+trap 'rm -f "$diff_file" "$out" "$out.usage.json" "$idx" "$handled_file" "$engine_err"' EXIT
 # The engine's stderr is TEED, not captured: an operator watching a slow review
 # should still see it as it happens, and the copy is only so the exit can say
 # WHICH kind of failure this was.
