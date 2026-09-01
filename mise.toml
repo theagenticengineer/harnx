@@ -1,0 +1,155 @@
+# TRUST-ANCHOR SUBSET. This is deliberately NOT the repository's full mise.toml.
+#
+# This branch carries only the ai-review security core, so it pins only the
+# tools the ai-review trunk workflow actually executes, and none of the
+# hygiene floor's linters and formatters. The full file, with the complete
+# toolchain and every `mise run` task, lives on the child branch immediately
+# above this one and replaces this one wholesale at the same path.
+#
+# DO NOT "reconcile" this file with the child branch's copy. They are meant to
+# differ. Pulling the floor's toolchain in here would make the job that holds
+# the review engine's API token install ten tools it never runs, for no
+# benefit and a wider supply-chain surface in the one job where that matters
+# most.
+#
+# What IS load-bearing here, and must survive any edit:
+#   - the claude-code pin and its npm_args (see the comment on it below)
+#   - jq, pinned rather than relying on the runner's preinstalled copy, so the
+#     review scripts parse with a known version
+# Both are runtime dependencies of .github/workflows/ai-review-trunk.yml. Drop
+# either and the trunk workflow fails at runtime, on the default branch, with
+# an error that points nowhere near this file.
+#
+# THE THREE PINS BELOW THEM ARE THE ANCHOR'S OWN GATES, and they are here only
+# because per-job `install_args` scoping now exists in ai-review-trunk.yml. The
+# objection this file's header used to make, that growing [tools] would make
+# the job holding the review engine's API token install tools it never runs, is
+# what install_args voids: each job names the subset it installs, so the
+# credentialed jobs still take jq and the claude CLI and nothing else. Verified
+# by scripts/tests/trunk-toolchain.bash, which fails if a job invokes a binary
+# it does not install or installs one this file does not pin.
+#
+# Scoped to the anchor verifying its OWN code, per #37 criterion 43: shellcheck
+# and shfmt over its own shell scripts, and pre-commit to run them plus the
+# paired-test gate. Not vale, not markdownlint, not taplo, not gitleaks. Those
+# are floor gates over floor artifacts and belong on the child branch.
+#
+# THE ANCHOR ALSO REVIEWS ITS OWN CODE BEFORE IT PUSHES, which is why the
+# claude-code pin above is load-bearing twice over. It is a runtime dependency
+# of the trunk workflow, and it is also what `ai-review:local` runs on a
+# developer machine to satisfy the pre-push gate below. That gate used to live
+# only on the child branch, which left this branch, the one holding the review
+# engine and the credentials and the default-branch resolution for the whole
+# stack, as the only branch in it whose pushes were reviewed by nothing.
+
+[settings]
+# Required for the [hooks] table below; mise gates hooks behind it.
+experimental = true
+
+[hooks]
+# The gates arrive with the toolchain. `mise install` is the first command
+# anybody runs in a fresh clone or worktree, so hook installation rides it
+# rather than living in a README instruction nobody reads. The script exits
+# quietly in CI, where hooks do nothing.
+postinstall = "bash scripts/mise/setup-hooks.sh"
+
+[tools]
+jq = "1.7.1"
+pre-commit = "3.7.1"
+shellcheck = "0.10.0"
+shfmt = "3.8.0"
+# npm_args counters mise's npm backend default of --ignore-scripts=true: this
+# package ships its actual binary via a postinstall script that fetches a
+# platform-native optional dependency, so skipping scripts leaves `claude`
+# installed but non-functional ("claude native binary not installed").
+# Verified locally with a forced fresh reinstall (mise install --force) that
+# this config actually produces a working binary. This alone was NOT enough
+# on CI, though: mise itself is not pinned anywhere else in this repo, so
+# jdx/mise-action silently installed whatever mise release was latest at
+# runtime, a materially newer version than the one this config was verified
+# against, whose npm backend did not honor npm_args the same way and hit the
+# exact same "native binary not installed" failure regardless of this
+# setting. The `version: "2025.10.10"` pin on every jdx/mise-action step in
+# .github/workflows/ai-review-trunk.yml (matching the mise release this was
+# verified against) is required alongside this npm_args setting, not
+# optional; either one alone reproduced the CI failure.
+"npm:@anthropic-ai/claude-code" = { version = "2.1.245", npm_args = "--ignore-scripts=false" }
+
+# Task runner. Only the tasks the TRUST ANCHOR itself runs live here; the
+# floor's hygiene tasks stay on the child branch with the toolchain they drive.
+# `test` exists because criterion 24 of #37 requires the anchor to verify its
+# own scripts: before it, ci.yml's `shell-tests` job echoed a warning and
+# passed, so the branch every workflow_run in the stack resolves from declared
+# eight required checks and verified none of them.
+#
+# `ai-review:local` is here for the same reason, one level up. The anchor is
+# where the review engine lives, so the anchor is where the review that engine
+# performs has to be runnable. "Only the tasks the anchor itself runs" is
+# satisfied literally: a developer pushing THIS branch is the one who runs it.
+
+[tasks.test]
+description = "run the shell-test suite (scripts/tests/*.bash)"
+run = "bash scripts/mise/test.sh"
+
+# `lint` is every DETERMINISTIC local gate this branch has, so a contributor can
+# run what CI runs without pushing. It goes through pre-commit rather than
+# invoking the linters directly, so there is exactly one list of gates
+# (.pre-commit-config.yaml) and `mise run lint`, the git hook and the CI job can
+# never disagree about what the anchor checks.
+#
+# "Every gate" is now one word short of true, and the word is the point.
+# `pre-commit run --all-files` runs the `pre-commit` stage, so the
+# `locally-reviewed` hook, which is staged `pre-push`, is not among them. That
+# is deliberate: it gates on a recorded review of the tree, which is a fact
+# about what has already been run and not something a linter pass can establish.
+
+[tasks.lint]
+description = "run every local gate over the whole tree (the same set CI runs)"
+run = "pre-commit run --all-files --show-diff-on-failure"
+
+# The local review, and the thing the `locally-reviewed` pre-push hook in
+# .pre-commit-config.yaml gates on. It reviews the whole working tree against
+# the remote's default branch and records the reviewed tree hash only when a
+# full, non-narrowed pass converges to zero accepted Major findings.
+#
+# It is NOT part of `lint`. `lint` is deterministic, offline and free; this
+# calls a model, takes minutes and costs money. Folding a metered stochastic
+# check into the task CI runs on every push would spend that on every job and
+# make a red `lint` ambiguous between "the formatter disagrees" and "the
+# reviewer found something".
+
+[tasks."ai-review:local"]
+description = "run the thin local ai-review against the working tree (no CI, no posting)"
+run = "bash scripts/mise/ai-review-local.sh"
+
+# Seeds .harnx/loop/, the working memory a pass reads when it starts in a clean
+# context window. Idempotent and never overwriting, so it is safe to run at any
+# point in a loop that is already in flight.
+#
+# NOT in [hooks].postinstall, unlike setup-hooks.sh. `mise install` runs in CI
+# and in every repository harnx generates, and seeding a loop nobody asked for
+# is noise in both. A gate that is not installed is not a gate, which is why
+# hooks ride postinstall; loop state that is not seeded is simply not in use.
+
+[tasks."loop:init"]
+description = "seed .harnx/loop/ with the loop's working memory (idempotent)"
+run = "bash scripts/ai-review/loop-init.sh"
+
+# Prints one pass's complete instruction: the fixed prompt for the mode, then
+# the state block with the last failure first. It does not invoke a model; pipe
+# it into one.
+#
+# THE MODE IS REQUIRED and the task refuses without it. `mise run loop:prompt`
+# forwards its trailing arguments to the command, which is what carries
+# plan|build through to the script.
+
+[tasks."loop:prompt"]
+description = "print one pass's prompt plus loop state; requires a mode (plan|build)"
+run = "bash scripts/ai-review/loop-prompt.sh"
+
+# The deterministic half of "a plan pass implements nothing". Run after a plan
+# pass; it compares against the snapshot loop:prompt recorded before it.
+
+[tasks."loop:check-plan"]
+description = "verify the last plan pass changed the plan and nothing else"
+run = "bash scripts/ai-review/check-plan-pass.sh"

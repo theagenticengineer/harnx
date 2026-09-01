@@ -1,0 +1,788 @@
+name: ai-review-trunk
+# The CREDENTIALED half of the ai-review pipeline. Its counterpart is
+# .github/workflows/ai-review.yml; docs/ai-review-setup.md explains the whole
+# architecture from scratch, and AGENTS.md's "AI review" section summarises it
+# for contributors.
+#
+# workflow_run is what makes this file safe to hold credentials: GitHub always
+# resolves a workflow_run-triggered workflow's YAML, and everything it checks
+# out, from the repository's DEFAULT branch, never from the pull request whose
+# completion triggered it. A pull request may freely rewrite this file or any
+# script it calls; the edit sits inert until a human merges it to the default
+# branch, and only the NEXT run after that merge executes it. That is the
+# whole Pattern 2 mitigation, and it holds for every job below.
+#
+# Two things are load-bearing and easy to undo by accident:
+#
+#   1. NO `ref:` ON ANY CHECKOUT. actions/checkout defaults, for a
+#      workflow_run event, to the default branch. Adding
+#      `ref: ${{ github.event.workflow_run.head_sha }}` looks helpful ("check
+#      out the commit that triggered this") and silently checks out the pull
+#      request's own code instead, handing every credential below to the code
+#      this design exists to keep away from them. No error, no warning, whole
+#      guarantee gone.
+#   2. THE PULL REQUEST'S CONTENT IS DATA, NEVER CODE. The only thing that
+#      crosses from the pull request side is the diff artifact, and the only
+#      thing that reads it is the review engine, which sends it to a model as
+#      untrusted text. Nothing below sources, executes, or evaluates artifact
+#      content.
+#
+# The second layer, independent of both: every secret named here lives on the
+# `ai-review` GitHub Environment, whose deployment branch policy allows only
+# the trust-anchor branches. GitHub checks the running ref against that policy
+# server-side before handing over any value, so even a brand-new job added on
+# a pull request branch that names these secrets directly gets nothing.
+on:
+  workflow_run:
+    workflows: [ai-review]
+    types: [completed]
+concurrency:
+  # Keyed on the head REPOSITORY plus the head branch, not on the pull request
+  # number: the number is absent from a workflow_run payload for a fork's pull
+  # request, and an empty concurrency key would collapse every concurrent
+  # review into one group. The repository half is not decoration either, since
+  # cancel-in-progress is on: branch names are only unique WITHIN a
+  # repository, so two forks each pushing a `patch-1` would otherwise share a
+  # group and cancel each other's review, leaving one pull request with its
+  # required check unreported.
+  group: >-
+    ai-review-trunk-${{ github.event.workflow_run.head_repository.full_name }}-${{
+    github.event.workflow_run.head_branch }}
+  cancel-in-progress: true
+permissions: {}
+jobs:
+  context:
+    name: resolve the pull request under review
+    # Every job below chains off this one, so this single guard keeps the
+    # whole workflow from running for any `ai-review` run that was not a pull
+    # request review.
+    #
+    # Cancelled runs are excluded too. workflow_run fires on `completed`,
+    # which includes a cancellation, and the pull request workflow cancels its
+    # own in-flight runs on every new push. Without this the superseded run
+    # would reach the gate job, find no review to read, and publish a RED
+    # ai-review-resolved against the commit it was reviewing. Harmless for
+    # merging, since protection reads the current head, but it litters
+    # superseded commits with failures that were never real verdicts.
+    if: >-
+      ${{ github.event.workflow_run.event == 'pull_request'
+      && github.event.workflow_run.conclusion != 'cancelled' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      pr: ${{ steps.resolve.outputs.pr }}
+      # The probe's verdict, computed on the TRUSTED side from repository
+      # state. It decides whether a review happens at all, which is exactly the
+      # decision that must not be authored by the thing under review: a
+      # pull-request-side probe publishing `reviewers: []` would be a
+      # self-service mute button on the required check.
+      configured: ${{ steps.probe.outputs.configured }}
+      reviewers: ${{ steps.probe.outputs.reviewers }}
+      # The pull request's base BRANCH NAME, resolved from the same
+      # server-side payload as the number. extract-diff.sh diffs against it.
+      base: ${{ steps.resolve.outputs.base }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      # resolve-pr-context.sh parses the API's JSON with `jq`. Without this
+      # step the job ran it anyway, on whatever `jq` the runner image happens
+      # to ship, which is the one unpinned tool invocation in the whole
+      # pipeline and contradicts the reproducibility rule the rest of the
+      # floor holds to.
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c  # v4.3.0
+        with:
+          version: "2025.10.10"
+          install_args: jq
+          # No tool cache. See the review job below for the argument.
+          cache: false
+      # FIRST, before anything else in this job. It reads `vars.AI_REVIEWERS`,
+      # which only a repository admin can write, and it decides the fork
+      # carve-out. Deciding the fork case here rather than inside each
+      # reviewer's leg is load-bearing: dormant before any matrix exists means
+      # no leg runs, so the missing-credential hard failure can never fire on a
+      # fork contributor who has no way to fix it.
+      - name: Decide whether a review happens, and by whom
+        id: probe
+        env:
+          AI_REVIEWERS: ${{ vars.AI_REVIEWERS }}
+          HEAD_REPOSITORY: ${{ github.event.workflow_run.head_repository.full_name }}
+          REPOSITORY: ${{ github.repository }}
+        run: bash scripts/ai-review/probe.sh
+      - name: Resolve the pull request number
+        id: resolve
+        # Skipped when dormant. There is nothing to post to, and a fork whose
+        # number failed to resolve would otherwise turn a dormant pass into a
+        # red pipeline failure.
+        if: ${{ steps.probe.outputs.configured == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OWNER: ${{ github.repository_owner }}
+          REPO_NAME: ${{ github.event.repository.name }}
+          EVENT_PR_NUMBER: ${{ github.event.workflow_run.pull_requests[0].number }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: bash scripts/ai-review/resolve-pr-context.sh
+  review:
+    name: run the review engine
+    needs: context
+    # Explicit rather than relying on the implicit success() a bare `if`
+    # replaces: this job must run only when the pull request side actually
+    # produced the artifact it is about to download.
+    if: >-
+      ${{ !cancelled() && needs.context.result == 'success'
+      && needs.context.outputs.configured == 'true'
+      && github.event.workflow_run.conclusion == 'success' }}
+    # ONE JOB PER REVIEWER, from the registry the probe published.
+    #
+    # fail-fast: false, so one provider's outage or one missing credential
+    # confines itself to its own leg. The other reviewers still run and still
+    # post, and the overall gate still goes red, which is the honest report
+    # that the declared configuration is not being honoured. fail-fast would
+    # instead cancel the reviewers that were working, turning one
+    # misconfiguration into no review at all.
+    strategy:
+      fail-fast: false
+      matrix:
+        reviewer: ${{ fromJSON(needs.context.outputs.reviewers) }}
+        # THREE PASSES PER REVIEWER, each a separate invocation with its own
+        # clean context, so no pass crowds another's window. `code` reviews the
+        # diff for defects; the other two review a DESCRIPTION against what was
+        # delivered, which makes description drift an ordinary finding: it
+        # opens a thread and blocks the gate like any other, with no separate
+        # protocol for answering it.
+        #
+        # Separate LEGS rather than three calls in one, so a provider failing
+        # one pass does not cost the other two, and so the three run in
+        # parallel instead of in series.
+        pass: [code, issue-body, pr-body]
+    runs-on: ubuntu-latest
+    # SIZED FOR CHUNKING, not for one call. review-engine.sh splits a large
+    # diff on file boundaries and reviews each chunk, so the wall clock is
+    # roughly the chunk count times one call. Measured: a two-chunk review took
+    # 488 seconds, and at the previous ten-minute budget the next push overran
+    # and was CANCELLED, which the gate then reports as "the review pipeline did
+    # not complete" with no way to tell a dead token from a large diff.
+    #
+    # This is a BACKSTOP for something genuinely stuck. The thing that actually
+    # bounds the work is AI_REVIEW_MAX_CHUNKS in the engine, which refuses an
+    # unreviewably large diff by name rather than starting it and being killed.
+    # The two are a pair: raising one without the other reintroduces the
+    # cancellation.
+    timeout-minutes: 30
+    # Where the engine token comes from. The value is released only because
+    # this job's ref is the default branch, which is on the environment's
+    # deployment branch policy.
+    environment: ai-review
+    permissions:
+      # extract-diff.sh fetches the pull request's own ref with this, which is
+      # all the review input now costs. No `actions: read`: this job used to
+      # download the pull request workflow's diff ARTIFACT, and that scope
+      # existed only to reach another run's artifact. The artifact is gone; so
+      # is the scope.
+      contents: read
+      # handled-from-threads.sh reads this pull request's review threads.
+      pull-requests: read
+      # The issue-body pass reads the LINKED ISSUE, and the Issues API is not
+      # covered by pull-requests: read. Without this the read fails, and it
+      # failed silently until fetch-subject.sh learned to tell an API refusal
+      # from an empty description: an 86,045-byte issue was read as 146 bytes
+      # and the pass reported on a placeholder.
+      issues: read
+    steps:
+      # No `ref:`. See the header. This is the trusted, default-branch copy of
+      # every script this job runs.
+      #
+      # fetch-depth: 0 and persist-credentials are BOTH load-bearing for
+      # extract-diff.sh below. The default shallow checkout has one commit, so
+      # a later fetch of the pull request's ref would also be shallow and
+      # `git diff base...head` could not find a merge base; and the fetch is an
+      # authenticated call to this repository, so the checkout's credential has
+      # to survive the step. The token behind it is this job's `contents: read`
+      # and nothing more.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+      # PER-JOB TOOL SCOPING, and it is a security control, not tidiness.
+      #
+      # mise.toml stays the single source of truth for VERSIONS; install_args
+      # selects which of its entries this job actually installs. Verified on
+      # the pinned mise 2025.10.10 that a positional selector installs exactly
+      # the named subset at the config's pinned version, backend-prefixed names
+      # included, and that a bare install pulls all of them.
+      #
+      # Why it matters: every installed tool's bin directory goes on PATH, so a
+      # compromised pinned artifact can SHADOW a binary these scripts do
+      # execute, `jq` above all. "Installed but never invoked" is not inert in
+      # a job holding a live credential. This job runs the review engine, so it
+      # needs the claude CLI; the two jobs below do not, and do not get it.
+      #
+      # Without this the scoping is accidental rather than designed: the trunk
+      # workflow reads the DEFAULT branch's mise.toml, which today is the
+      # anchor's two-tool file. At cutover `main` inherits this eleven-tool
+      # one, and every repo harnx GENERATES is born in that shape, with no
+      # anchor to hide behind.
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c  # v4.3.0
+        with:
+          version: "2025.10.10"
+          install_args: jq npm:@anthropic-ai/claude-code
+          # NO TOOL CACHE AT ALL, which is both the security answer and the
+          # only honest one here.
+          #
+          # Security: the default cache key is derived from the config file's
+          # hash, and every job reads the same config while installing a
+          # different subset of it. One shared key lets the first job to finish
+          # populate the cache for the others, so a later job restores tools it
+          # deliberately did not install and puts their bin directories back on
+          # PATH, silently undoing the scoping above. Distinct per-job keys
+          # mitigate that; no cache removes it.
+          #
+          # Honest: this workflow declares `permissions: {}` and no job grants
+          # `actions: write`, which the Actions cache service requires in order
+          # to SAVE. So nothing was ever being cached. Left implicit, the
+          # action tried anyway and annotated every run with "cache write
+          # denied: token has no writable scopes", and a pipeline that
+          # decorates each run with warnings nobody will act on teaches its
+          # readers to skip the ones that matter.
+          #
+          # Granting `actions: write` to the jobs holding the engine token and
+          # the App private key, in exchange for skipping a tool download, is
+          # the wrong trade.
+          cache: false
+      # THE REVIEW INPUT IS COMPUTED HERE, on the trusted side, and this is a
+      # security control rather than a tidier place to put it.
+      #
+      # It used to arrive as an artifact uploaded by ai-review.yml, which is
+      # pull_request-triggered and therefore read from the pull request's own
+      # branch: the author controls every line of it. Replacing one line with
+      # `echo "benign" >diff.txt` produced a pull request whose review was of
+      # the word "benign". The artifact name was unchanged so the download
+      # succeeded, require-diff.sh saw a present and non-empty file, and the
+      # per-run nonce guards the untrusted region's FENCE, not its content.
+      # The engine reported nothing, no thread was posted, and
+      # ai-review-resolved, a REQUIRED context, went green over a pull request
+      # nothing had read.
+      #
+      # extract-diff.sh asks GitHub for refs/pull/<n>/head instead, asserts it
+      # is the commit this run is a verdict about, and diffs three-dot against
+      # the base the context job resolved. There is no second copy to validate
+      # and nothing a pull request writes reaches the review input except the
+      # commits it actually pushed.
+      #
+      # Written under RUNNER_TEMP, NOT into the workspace, for the same reason
+      # the HANDLED memory file below is: this is pull-request-authored content
+      # landing in the job that holds the engine token, and $GITHUB_WORKSPACE is
+      # where the TRUSTED scripts live.
+      - name: Compute the diff under review from GitHub's own refs
+        env:
+          OWNER: ${{ github.repository_owner }}
+          REPO_NAME: ${{ github.event.repository.name }}
+          PR_NUMBER: ${{ needs.context.outputs.pr }}
+          BASE_REF: ${{ needs.context.outputs.base }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          DIFF_FILE: ${{ runner.temp }}/ai-review-input/diff.txt
+        run: |
+          mkdir -p "$RUNNER_TEMP/ai-review-input"
+          bash scripts/ai-review/extract-diff.sh
+      # Memory for the review, so a pass does not re-derive (and, since the
+      # model rewords, re-post as a NEW thread) a finding already
+      # dispositioned on this pull request. Sourced from the pull request's
+      # own RESOLVED review threads, never from a repo file: a committed
+      # dismissal ledger would be author-controlled content inside the pull
+      # request under review, a self-service mute button on the blocking gate.
+      # See handled-from-threads.sh for the full argument.
+      #
+      # It moved here, to the trunk side, with the split: it needs a token to
+      # read threads at all, and the pull request workflow now holds none.
+      # Best-effort by design at the step level: this step failing (a GitHub
+      # API blip) should not fail the review, it only means this pass runs
+      # without memory, which is exactly how every pass ran before it existed.
+      - name: Build HANDLED and OPEN memory from the pull request's threads
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OWNER: ${{ github.repository_owner }}
+          REPO_NAME: ${{ github.event.repository.name }}
+          PR_NUMBER: ${{ needs.context.outputs.pr }}
+          # Under RUNNER_TEMP, not the workspace: neither file may become part
+          # of the findings artifact handed to the token-holding job below.
+          OUTPUT: ${{ runner.temp }}/ai-review-handled.json
+          # The unresolved half. It does not suppress anything; it pins the
+          # WORDING of a finding that already has a thread, so a re-report
+          # lands on that thread instead of opening another one.
+          OPEN_OUTPUT: ${{ runner.temp }}/ai-review-open.json
+        run: bash scripts/ai-review/handled-from-threads.sh
+      # THE DESCRIPTIONS UNDER REVIEW, read from the API rather than from
+      # anything the pull request produced. Both are pull-request-authored text
+      # and land under RUNNER_TEMP with everything else of that kind.
+      #
+      # The linked issue is taken from the BRANCH name, not from the pull
+      # request body: the body is what a `pr-body` pass may be about to call
+      # wrong, so trusting it to say which issue to compare against would let a
+      # drifted description choose its own examiner.
+      - name: Fetch the description this pass reviews
+        if: ${{ matrix.pass != 'code' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OWNER: ${{ github.repository_owner }}
+          REPO_NAME: ${{ github.event.repository.name }}
+          PR_NUMBER: ${{ needs.context.outputs.pr }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          PASS: ${{ matrix.pass }}
+          SUBJECT_FILE: ${{ runner.temp }}/ai-review-subject.txt
+        run: bash scripts/ai-review/fetch-subject.sh
+      - name: Run the review engine
+        env:
+          # THE SECRET IS INDEXED BY NAME, and the name came from the probe.
+          #
+          # Generic env var, engine-suffixed secret: the engine reads the
+          # engine-agnostic AI_REVIEW_ENGINE_TOKEN, and the secret it comes
+          # from is AI_REVIEW_ENGINE_TOKEN_<ENGINE>. That split is what lets
+          # the repository hold more than one review token at a time.
+          #
+          # The uppercase mapping happens in probe.sh, not here, because
+          # GitHub Actions expressions have no uppercase function. The only
+          # alternative is reading `toJSON(secrets)` in this job and picking
+          # the key out with jq, which would materialise EVERY secret this job
+          # can see, the App's private key among them, into one string inside
+          # the job that runs the review engine on an attacker-authored diff.
+          # Indexing by a name the trusted side computed keeps this job naming
+          # exactly the one secret it needs.
+          AI_REVIEW_ENGINE_TOKEN: ${{ secrets[matrix.reviewer.secret] }}
+          REVIEWER: ${{ matrix.reviewer.slug }}
+          ENGINE: ${{ matrix.reviewer.engine }}
+          PASS: ${{ matrix.pass }}
+        run: |
+          # An absent or empty diff means the extraction failed or the range
+          # is genuinely empty, not that the code is clean, and
+          # review-engine.sh cannot tell any of those apart (it short-circuits
+          # an unreadable-or-empty diff into "no findings" and exit 0).
+          # Reporting a clean pass for a review that never happened is the one
+          # fail-open this gate must not have.
+          # The guard is a SCRIPT, not the inline block it used to be, because
+          # an inline block cannot be reached by scripts/tests/*.bash and so
+          # could never be pinned; scripts/tests/require-diff.bash pins it now.
+          mkdir -p "$RUNNER_TEMP/ai-review-out"
+          diff_file="$RUNNER_TEMP/ai-review-input/diff.txt"
+          DIFF_FILE="$diff_file" bash scripts/ai-review/require-diff.sh
+          # An absent memory file (the step above is best-effort) is already
+          # documented by review-engine.sh as "no memory", so no existence
+          # check is needed for either of them.
+          # THE REGISTRY RESOLVES scripts/ai-review/<slug>.sh, and a named
+          # reviewer with no engine FAILS rather than being skipped. The path
+          # is checked against the DEFAULT branch's checkout, so a pull request
+          # can neither supply its own engine nor delete one to force dormancy.
+          if [ ! -f "$ENGINE" ]; then
+            echo "::error::ai-review reviewer '$REVIEWER' is named in" \
+              "AI_REVIEWERS but has no engine at $ENGINE. Add that script on" \
+              "the default branch, or remove '$REVIEWER' from AI_REVIEWERS." \
+              "This fails rather than skipping: a reviewer somebody asked for" \
+              "and that never ran is exactly the silent omission this gate" \
+              "exists to prevent."
+            exit 1
+          fi
+          t0="$(date +%s)"
+          AI_REVIEW_DIFF_FILE="$diff_file" \
+            AI_REVIEW_PASS="$PASS" \
+            AI_REVIEW_SUBJECT="$RUNNER_TEMP/ai-review-subject.txt" \
+            AI_REVIEW_OUTPUT="$RUNNER_TEMP/ai-review-out/$REVIEWER.$PASS.json" \
+            AI_REVIEW_HANDLED="$RUNNER_TEMP/ai-review-handled.json" \
+            AI_REVIEW_OPEN="$RUNNER_TEMP/ai-review-open.json" \
+            bash "$ENGINE"
+          # Timing for the CI convergence table. Measured here, reported by
+          # the next job, so it travels as an artifact; post-ci-status.sh
+          # accepts it only if it is digits.
+          echo "$(($(date +%s) - t0))" >"$RUNNER_TEMP/ai-review-out/$REVIEWER.$PASS.seconds"
+      # UNDER RUNNER_TEMP, NOT THE WORKSPACE, and for the same reason the diff
+      # and the review memory are. This file is the MODEL's output, derived
+      # from a diff the pull request author wrote, and $GITHUB_WORKSPACE is
+      # where the trusted scripts live. It used to be written to the checkout
+      # root, and then downloaded back into the checkout root of the job that
+      # holds the App private key, which contradicted this workflow's own
+      # stated principle three steps above it.
+      #
+      # Nothing sources or executes it, so this is not a hole being closed; it
+      # is the principle being applied to the one place that had drifted from
+      # it. A rule with an exception nobody can justify stops being a rule.
+      # ONE ARTIFACT PER REVIEWER. A shared name would have the legs race to
+      # overwrite each other, and the count union.sh performs against the
+      # registry would then be meaningless: a reviewer that never ran and a
+      # reviewer whose file was overwritten look the same.
+      - name: Upload findings
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: ai-review-findings-${{ matrix.reviewer.slug }}-${{ matrix.pass }}
+          path: ${{ runner.temp }}/ai-review-out/
+          retention-days: 1
+          if-no-files-found: error
+  post_findings:
+    name: post findings
+    needs: [context, review]
+    # NOT gated on every reviewer having succeeded, and with a matrix that
+    # distinction is the difference between a partial review and no review.
+    #
+    # `needs.review.result` is 'success' only when EVERY leg succeeded, so one
+    # reviewer with an expired token used to skip this job entirely and NO
+    # reviewer's findings were posted. That contradicts the whole point of
+    # `fail-fast: false`: the other reviewers ran, produced findings, and the
+    # contributor saw none of them.
+    #
+    # The gate still goes red. evaluate-gate.sh reads the same
+    # `needs.review.result` and refuses to reach a verdict when the pipeline
+    # did not complete, which is the honest report that the declared
+    # configuration is not being honoured. What changes is that the reviewers
+    # who DID run get their findings onto the pull request while that is true.
+    if: >-
+      ${{ !cancelled() && needs.context.result == 'success'
+      && needs.context.outputs.configured == 'true'
+      && needs.review.result != 'skipped' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: ai-review
+    permissions:
+      contents: read
+    # A SEPARATE job from the review above, not a later step in it, and that
+    # is load-bearing rather than cosmetic. Within one job, on one runner, a
+    # step that processes untrusted content can poison the shared environment
+    # ($GITHUB_ENV, $GITHUB_PATH, NODE_OPTIONS) so that a LATER step in the
+    # same job, such as the token-minting action below, executes under
+    # conditions the attacker influences, letting it exfiltrate the freshly
+    # minted write-scoped token before the legitimate posting step ever uses
+    # it. A separate job is a separate runner and a separate environment, so
+    # nothing the review job's execution touches can reach this one. The
+    # workflow_run split already keeps PR-authored CODE out of both; this
+    # keeps PR-authored DATA away from the write token as well.
+    #
+    # This job never runs the review engine and never reads the diff. It posts
+    # already-structured findings through API calls, and takes the diff's
+    # content on no path at all.
+    steps:
+      # No `ref:`. See the header.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      # jq only. This job holds the App PRIVATE KEY and never runs the review
+      # engine, so the claude CLI has no business on its PATH. See the review
+      # job above for the full argument.
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c  # v4.3.0
+        with:
+          version: "2025.10.10"
+          install_args: jq
+          # No tool cache. See the review job above for the argument.
+          cache: false
+      # Same run, so no run-id and no actions: read scope are needed here.
+      # Unpacked under RUNNER_TEMP for the same reason it was uploaded from
+      # there. Without an explicit `path:` this lands model-derived content in
+      # the checkout root of the job holding the App private key.
+      - name: Download every reviewer's findings
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          # A PATTERN, merged into one directory, because the fan-out uploads
+          # one artifact per reviewer. Same run, so no run-id and no
+          # `actions: read` scope are needed.
+          pattern: ai-review-findings-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/ai-review-out
+      # ONE SET, from however many reviewers ran. Without this, two reviewers
+      # finding the same problem would open two threads for it, and a second
+      # opinion would cost the contributor a second copy of every finding.
+      #
+      # EXPECTED_REVIEWERS is the registry, so the union can COUNT what
+      # actually arrived against what was asked for. A matrix that fanned out
+      # to fewer legs than the registry named is invisible to job status: the
+      # legs that ran all passed, and a reviewer that never ran produces no
+      # findings, which reads exactly like a reviewer that found nothing.
+      - name: Merge the reviewers' findings into one set
+        env:
+          UNION_INPUTS: ${{ runner.temp }}/ai-review-out
+          EXPECTED_REVIEWERS: ${{ toJSON(fromJSON(needs.context.outputs.reviewers).*.slug) }}
+          # STRICT only when every leg reported success. A reviewer whose leg
+          # FAILED has already been reported, loudly, by that leg and by the
+          # gate; making the union refuse as well would suppress the findings
+          # the other reviewers did produce, which is the failure this job's
+          # own condition was just changed to avoid. A reviewer whose leg
+          # SUCCEEDED and produced nothing is the case with no other reporter,
+          # and that stays a hard failure.
+          EXPECTED_STRICT: ${{ needs.review.result == 'success' }}
+          AI_REVIEW_OUTPUT: ${{ runner.temp }}/ai-review-out/union.json
+        run: bash scripts/ai-review/union.sh
+      # What the merged set MEANS against the pull request that already exists:
+      # which findings are new, which already have a thread, and which are
+      # recurrences of something a human resolved. Nothing is dropped here; the
+      # decision about what to POST stays in the script holding the token.
+      - name: Mint a narrowly-scoped review-app token
+        id: apptoken
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3.2.0
+        with:
+          # `client-id`, not `app-id`. v3 deprecates the numeric app id and
+          # warns on every run that uses it. The two are NOT spellings of one
+          # value: an App's client id is a separate identifier
+          # (`Iv`-prefixed), which is why this is a secret rename in
+          # configure-environment.sh and a new value on the environment rather
+          # than an input rename here.
+          client-id: ${{ secrets.AI_REVIEW_APP_CLIENT_ID }}
+          private-key: ${{ secrets.AI_REVIEW_APP_KEY }}
+      - name: Read the pull request's existing threads
+        env:
+          GH_TOKEN: ${{ steps.apptoken.outputs.token }}
+          OWNER: ${{ github.repository_owner }}
+          REPO_NAME: ${{ github.event.repository.name }}
+          PR_NUMBER: ${{ needs.context.outputs.pr }}
+          THREADS_OUTPUT: ${{ runner.temp }}/ai-review-out/threads.json
+        run: bash scripts/ai-review/fetch-review-threads.sh
+      - name: Classify the merged findings against those threads
+        env:
+          FINDINGS: ${{ runner.temp }}/ai-review-out/union.json
+          THREADS: ${{ runner.temp }}/ai-review-out/threads.json
+          OUTPUT: ${{ runner.temp }}/ai-review-out/reconciled.json
+        run: bash scripts/ai-review/reconcile.sh
+      # A PATH THIS PULL REQUEST ACTUALLY TOUCHES, for the anchoring cascade's
+      # last resort. Every earlier step needs the finding's own file to be part
+      # of the diff, and a description-drift finding is often about a file that
+      # is not: "the issue claims work on AGENTS.md and the diff never touches
+      # it" is the most useful thing a drift pass can say, and it is
+      # unanchorable by construction. Without somewhere to put it, one such
+      # finding takes the whole job red.
+      - name: Pick a path the diff contains, for unanchorable findings
+        id: anchor
+        env:
+          GH_TOKEN: ${{ steps.apptoken.outputs.token }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ needs.context.outputs.pr }}
+        run: |
+          # ONE result, not every page. Only the first filename is ever used,
+          # and `--paginate` walked the whole changed-files list to throw all
+          # but one away: on a large pull request that is many API calls spent
+          # on a value the first response already contains.
+          path="$(gh api \
+            "repos/$REPOSITORY/pulls/$PR_NUMBER/files?per_page=1" \
+            -q '.[0].filename' 2>/dev/null | head -n1 || true)"
+          echo "anchor=$path" >>"$GITHUB_OUTPUT"
+          echo "unanchorable findings will be posted against '${path:-<none>}'."
+      - name: Post findings as resolvable review threads
+        env:
+          ANCHOR_FALLBACK: ${{ steps.anchor.outputs.anchor }}
+          GH_TOKEN: ${{ steps.apptoken.outputs.token }}
+          OWNER: ${{ github.repository_owner }}
+          REPO_NAME: ${{ github.event.repository.name }}
+          PR_NUMBER: ${{ needs.context.outputs.pr }}
+          # GitHub's own record of the reviewed commit, from the workflow_run
+          # payload, not anything the artifact carried: comments anchor to it,
+          # and letting pull-request-authored content name the commit (or the
+          # pull request) would let one pull request post review comments onto
+          # another.
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          FINDINGS: ${{ runner.temp }}/ai-review-out/reconciled.json
+        run: bash scripts/ai-review/post-findings.sh
+      # One upserted comment carrying the current review state. In this job
+      # because it is the only one holding a write-scoped token; the review
+      # job stays read-only. Runs even when the posting step above failed
+      # (`always()` minus cancellation): a failed pass is exactly when the
+      # current state is worth reporting, and this step's own failure still
+      # fails the job, so a status comment can never be the reason a red pass
+      # looks green.
+      - name: Upsert the CI review status comment
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ steps.apptoken.outputs.token }}
+          OWNER: ${{ github.repository_owner }}
+          REPO_NAME: ${{ github.event.repository.name }}
+          PR_NUMBER: ${{ needs.context.outputs.pr }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          FINDINGS: ${{ runner.temp }}/ai-review-out/reconciled.json
+          # The login the App's token comments under. `app-slug` is the App's
+          # slug; GitHub appends "[bot]" to form the account name that appears
+          # as `user.login` on anything the installation token writes.
+          # post-ci-status.sh matches on it so a pull request author cannot
+          # pre-post a comment carrying the status marker and have the App
+          # PATCH theirs instead of creating its own.
+          APP_LOGIN: ${{ steps.apptoken.outputs.app-slug }}[bot]
+          RUN_URL: >-
+            ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          # SUMMED across the fan-out. With one job per reviewer the legs run
+          # in parallel, but the number a reader wants is what the review cost,
+          # not what the luckiest leg cost.
+          secs="$(cat "$RUNNER_TEMP"/ai-review-out/*.seconds 2>/dev/null |
+            awk '{t += $1} END {print t + 0}')"
+          REVIEW_SECONDS="$secs" \
+            bash scripts/ai-review/post-ci-status.sh
+  resolved:
+    # NOT "ai-review-resolved". A job's `name:` becomes the display name of the
+    # check run GitHub creates for the job itself, and `ai-review-resolved` is a
+    # REQUIRED context in branch protection, published deliberately by
+    # post-check-run.sh against the reviewed head commit. When the job carried
+    # that name too, every trunk run added a second, unrelated check run under
+    # the same name to whatever commit the run was attributed to, so the head of
+    # this branch accumulated seven `ai-review-resolved` check runs, six of them
+    # from other pull requests' runs and four of them failures. Protection
+    # resolves a required context by name; two different producers answering to
+    # one name is a gate-integrity defect waiting for the wrong one to be read.
+    #
+    # The published CHECK_NAME below stays `ai-review-resolved` byte for byte,
+    # because that is the string branch protection pins.
+    name: evaluate the resolved gate
+    needs: [context, review, post_findings]
+    # !cancelled(), not success(): this job is what publishes the required
+    # check, so it has to run precisely when an upstream job FAILED too,
+    # otherwise a broken review leaves the gate reporting nothing at all.
+    # It still requires `context`, because without a pull request number there
+    # is no gate to evaluate.
+    # `!cancelled()` ALONE. It used to also require the context job to have
+    # succeeded, which meant a context failure published NO check run at all,
+    # and `ai-review-resolved` is a REQUIRED context: the pull request then sat
+    # on "Expected" forever, with no red check to read and no automatic
+    # recovery. That is strictly worse than a red gate, and it contradicts this
+    # file's own design, which is to always publish a verdict.
+    #
+    # Publishing needs only the head SHA, which comes from the workflow_run
+    # event and not from the context job, so a context failure can and must
+    # still be reported.
+    #
+    # A CANCELLED triggering run is the one case that must NOT publish, and it
+    # is a different thing from a failed one. When a new push supersedes an
+    # earlier review, concurrency cancels the pull request side, and a verdict
+    # published for that run would be a red check about a review that was never
+    # meant to finish. The context job carries the same filter for the same
+    # reason, and dropping it here littered superseded commits with failures
+    # that were never real verdicts. evaluate-gate.sh already refuses to compute a verdict
+    # when the pipeline did not complete, and now says so on a check run
+    # instead of leaving nothing behind.
+    if: ${{ !cancelled() && github.event.workflow_run.conclusion != 'cancelled' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # No `environment:` and no App token: everything here runs on
+    # github.token. See post-check-run.sh for why the check run in particular
+    # MUST be created with github.token rather than the App's.
+    permissions:
+      contents: read
+      pull-requests: read
+      # check-dispositions.sh reads the ISSUE a deferred finding names, to
+      # confirm it exists, is open, and links back. That is the Issues API on a
+      # real issue, not a pull request, so `pull-requests` does not cover it and
+      # the read 403s without this. The failure would be quiet and misleading:
+      # a 403 is indistinguishable from a missing issue at the call site, so
+      # every deferral would be reported as pointing at an issue that does not
+      # exist.
+      issues: read
+      # For creating the ai-review-resolved check run.
+      checks: write
+    steps:
+      # No `ref:`. See the header.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      # jq only, same reasoning as post_findings: the gate reads API JSON and
+      # never runs the review engine.
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c  # v4.3.0
+        with:
+          version: "2025.10.10"
+          install_args: jq
+          # No tool cache. See the review job above for the argument.
+          cache: false
+      # continue-on-error, so a red gate still reaches the publishing step
+      # below instead of aborting the job with no check run reported. The
+      # job's own final status is restored by the last step.
+      # BEFORE the verdict, so the warning is in the run whether the gate passes
+      # or fails. An expiry warning that only appeared on a red gate would
+      # arrive at exactly the moment it is too late to be useful.
+      #
+      # `toJSON(vars)` because GitHub cannot index the vars context by a
+      # computed name, and the expiry variable's name is derived from the
+      # reviewer's slug. These are VARIABLES, not secrets: reading the whole map
+      # materialises nothing sensitive, which is why the same trick is refused
+      # for `secrets` in the review job.
+      # ADVISORY, LIKE THE STEP BELOW IT. An expiry warning is information for
+      # whoever maintains the credential, never a verdict about the pull
+      # request, and this job's whole contract is that it always publishes a
+      # check run naming a cause. Without this, a non-zero exit here would skip
+      # "Evaluate the resolved gate" entirely and the check run would say the
+      # job "failed before it could report a cause" without check-resolved.sh
+      # or check-dispositions.sh ever running: an expiring token would read as
+      # a broken pipeline.
+      #
+      # The current `run` pipes through `tee`, and the default shell is
+      # `bash -e` without `pipefail`, so today the step's status is tee's and
+      # the script's exit is already swallowed. That is an accident of the pipe
+      # rather than a decision, and it would silently reverse the moment the
+      # pipe or the shell changed. This states the intent.
+      - name: Warn before a reviewer's credential lapses
+        continue-on-error: true
+        if: ${{ needs.context.outputs.configured == 'true' }}
+        env:
+          REVIEWERS: ${{ needs.context.outputs.reviewers }}
+          VARS: ${{ toJSON(vars) }}
+          GATE_EXPIRY_FILE: ${{ runner.temp }}/gate-expiry.txt
+        run: bash scripts/ai-review/check-expiry.sh | tee "$GATE_EXPIRY_FILE"
+      - name: Evaluate the resolved gate
+        id: gate
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OWNER: ${{ github.repository_owner }}
+          REPO_NAME: ${{ github.event.repository.name }}
+          PR_NUMBER: ${{ needs.context.outputs.pr }}
+          # The probe's verdict, so a DORMANT pipeline passes instead of
+          # reporting "the review pipeline did not complete". A skipped review
+          # job and a failed one look identical without it, and an unarmed
+          # repository would carry a permanently red required check it has no
+          # way to clear.
+          CONFIGURED: ${{ needs.context.outputs.configured }}
+          CONTEXT_RESULT: ${{ needs.context.result }}
+          REVIEW_RESULT: ${{ needs.review.result }}
+          POST_RESULT: ${{ needs.post_findings.result }}
+          # Written by the gate, read by the publishing step below. Under
+          # RUNNER_TEMP rather than the workspace so they can never be mistaken
+          # for repository content.
+          GATE_CAUSE_FILE: ${{ runner.temp }}/gate-cause.txt
+          GATE_DETAIL_FILE: ${{ runner.temp }}/gate-detail.txt
+          # Folded into the check run's body, so an expiry is seen by whoever
+          # reads the gate rather than only by whoever opens the run log.
+          GATE_EXPIRY_FILE: ${{ runner.temp }}/gate-expiry.txt
+        # A SCRIPT, not the inline block this used to be, for the same reason
+        # as require-diff.sh: an inline block cannot be reached by
+        # scripts/tests/*.bash, and this is the logic that decides whether a
+        # pull request may merge. scripts/tests/evaluate-gate.bash pins it.
+        # It runs check-resolved.sh and check-dispositions.sh, and captures
+        # WHY it failed instead of discarding it.
+        run: bash scripts/ai-review/evaluate-gate.sh
+      # The step that puts the verdict back on the pull request. A
+      # workflow_run job does NOT surface as a status on the pull request that
+      # triggered it, the way a pull_request-triggered job does, so without
+      # this the required ai-review-resolved check would sit permanently
+      # "Expected" and no pull request could ever merge.
+      - name: Publish the ai-review-resolved check run
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OWNER: ${{ github.repository_owner }}
+          REPO_NAME: ${{ github.event.repository.name }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          CHECK_NAME: ai-review-resolved
+          CONCLUSION: ${{ steps.gate.outcome == 'success' && 'success' || 'failure' }}
+          DETAILS_URL: >-
+            ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          GATE_CAUSE_FILE: ${{ runner.temp }}/gate-cause.txt
+          GATE_DETAIL_FILE: ${{ runner.temp }}/gate-detail.txt
+        # The cause the gate computed becomes the check run's title, which is
+        # the only text GitHub renders in the pull request's merge box. Read
+        # from files rather than step outputs because the detail is multi-line
+        # and can be long.
+        #
+        # `|| true` on both reads, and an unconditional fallback below: this
+        # step runs even when the gate step died before writing anything (the
+        # gate is continue-on-error precisely so a red verdict still reaches
+        # here). A missing cause file must degrade to the generic sentence, not
+        # abort the publish, because failing to publish leaves the required
+        # context unreported and blocks the pull request on nothing at all.
+        run: |
+          cause="$(cat "$GATE_CAUSE_FILE" 2>/dev/null || true)"
+          detail="$(cat "$GATE_DETAIL_FILE" 2>/dev/null || true)"
+          if [ -z "$cause" ] && [ "$CONCLUSION" != "success" ]; then
+            cause="The ai-review gate failed before it could report a cause;"
+            cause="$cause see the run linked under Details."
+          fi
+          SUMMARY="$cause" TEXT="$detail" bash scripts/ai-review/post-check-run.sh
+      # Restores the job status continue-on-error suppressed above, so the
+      # workflow run itself is red whenever the gate is, not only the check
+      # run on the pull request.
+      - name: Fail this job when the gate failed
+        if: ${{ steps.gate.outcome != 'success' }}
+        run: exit 1

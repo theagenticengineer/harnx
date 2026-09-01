@@ -1,0 +1,74 @@
+name: ai-review
+# THE TRIGGER HALF of the ai-review pipeline, and as of the diff-extraction
+# move it is ONLY a trigger. Its counterpart is
+# .github/workflows/ai-review-trunk.yml; docs/ai-review-setup.md explains the
+# whole architecture from scratch.
+#
+# This workflow is pull_request-triggered, which means GitHub reads THIS FILE,
+# and everything it runs, from the pull request's own branch. A pull request
+# author therefore controls everything here, on every push, long before any
+# human reviews or merges it. That is not a defect to be patched; it is the
+# defining property of a pull_request workflow.
+#
+# WHY IT NO LONGER PRODUCES THE DIFF. It used to run `git diff` and upload the
+# result as an artifact, and the credentialed trunk workflow reviewed whatever
+# bytes arrived. Because the author controls this file, that made the review
+# INPUT attacker-authored: replacing one line with
+# `echo "benign" >diff.txt` gave a pull request whose review was of the word
+# "benign", and the required ai-review-resolved check went green over a pull
+# request nothing had read. The trunk side now computes the diff itself from
+# GitHub's own refs, in scripts/ai-review/extract-diff.sh.
+#
+# WHY THE FILE SURVIVES. ai-review-trunk.yml is `workflow_run`-triggered on a
+# workflow named `ai-review`, and workflow_run only fires when such a workflow
+# COMPLETES. Deleting this file severs the trigger chain and the whole
+# credentialed pipeline stops running. The job below therefore exists to
+# succeed, and nothing downstream consumes anything it produces.
+#
+# IT IS PERMANENTLY EMPTY, BY DESIGN. An earlier version of this note said the
+# multi-reviewer registry's `probe` stage would land here, on the reasoning
+# that the probe needs no credential. That reasoning applied the wrong test.
+# Credential-need was never the criterion; AUTHORSHIP is. The probe decides
+# whether a review happens at all, and a pull request controls this file
+# completely, so a probe here publishing `reviewers: []` would be a
+# self-service mute button on a required check. It is the same shape as the
+# diff substitution that moved extraction to the trunk, and worse: that one
+# reviewed the wrong thing, this one would review nothing.
+#
+# The probe lives in ai-review-trunk.yml, reading `vars.AI_REVIEWERS`, which
+# only a repository admin can write. (`workflow_run` does not carry the
+# triggering run's job outputs anyway, so consuming a probe from here would
+# have needed the very artifact channel that was removed.)
+#
+# So there is nothing left for this file to grow into. Adding work here means
+# adding something the credentialed side would have to trust.
+#
+# It still names no secret, holds no engine token, no App id and no App key,
+# runs no review engine, posts no comment and reports no gate. There is
+# nothing here worth stealing.
+concurrency:
+  group: ai-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+# Deny by default. This job needs nothing at all: it does not check out the
+# repository, because there is no longer anything here to read.
+permissions: {}
+jobs:
+  trigger:
+    name: signal the trunk review workflow
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # A step that prints, deliberately, and it is not a placeholder in the
+      # sense this repository uses that word. A placeholder answers to a
+      # required context's name while verifying nothing. This job answers to no
+      # required context and claims to verify nothing: its entire contract is
+      # to COMPLETE, so that the workflow_run listener on the default branch
+      # fires. Everything that decides anything runs there.
+      - name: Report what happens next
+        run: |
+          echo "ai-review: this workflow is the trigger for ai-review-trunk.yml,"
+          echo "which runs from the default branch, computes this pull request's"
+          echo "diff from GitHub's own refs, and holds every credential."

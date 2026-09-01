@@ -1,0 +1,37 @@
+# THE LOOP'S WORKING MEMORY lives here, and none of it is tracked.
+#
+# A loop that runs in a fresh context window every pass needs its continuity on
+# disk rather than in a conversation. These are those files: the plan whose top
+# unchecked item is the next pass's job, the facts discovered so far, the
+# decisions taken and superseded, the operating manual, the last failure, and
+# the harness's own record of what each pass cost.
+#
+# WHY IGNORED RATHER THAN TRACKED. Every one of them changes on almost every
+# pass. Tracking them would put a commit's worth of churn on this branch for
+# each iteration of work that has not landed yet, and would make the pull
+# request that carries a rung unreadable next to the change it is actually for.
+# They are also per-instance by nature: another checkout of this branch is a
+# different loop with a different position in it.
+#
+# IGNORED DOES NOT MEAN UNREADABLE, and that distinction is the whole design.
+# The pipeline already reads gitignored `.harnx/` state every run by being
+# handed a path in the environment: review-engine.sh reads AI_REVIEW_HANDLED and
+# AI_REVIEW_OPEN exactly that way. The same applies here. Nothing needs these
+# files to be in git in order to read them; it needs to be told where they are.
+#
+# THE MECHANISM IS TRACKED, THE INSTANCE IS NOT. What ships, what a reviewer can
+# read, and what CODEOWNERS protects is scripts/ai-review/loop-init.sh, which
+# holds the canonical text of every file here as a heredoc and materialises them
+# on first use. A repository harnx generates receives that script and grows its
+# own loop state; it does not inherit harnx's.
+#
+# `*` PLUS AN EXCEPTION, not an enumeration. .harnx/.gitignore lists its two
+# files by name because .harnx/ mixes tracked and untracked content. This
+# directory does not: everything in it except this file is instance state, so
+# the catch-all is the honest rule and an enumeration would leave a silent gap
+# for the next file to fall through.
+#
+# The ignore lives here rather than in a root .gitignore so it moves with the
+# directory and dies with it.
+*
+!.gitignore

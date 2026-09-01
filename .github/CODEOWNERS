@@ -1,0 +1,56 @@
+# A change to any file that DEFINES or EXECUTES what a required check
+# actually enforces requires a review from a code owner, never satisfiable
+# by the PR author's own approval of their own PR. This is the
+# tamper-evidence measure for every required check: each one's real content
+# lives in files under repo control, so an edit that silently weakens one
+# (making check-resolved.sh always exit 0; dropping a hook entry from
+# .pre-commit-config.yaml so the "pre-commit" check still reports green with
+# less actually checked; blanking .yamllint.yaml or disabling NoEmDash in
+# styles/House/ so yamllint/vale silently stop catching anything while
+# "pre-commit" still reports green; redefining mise.toml's test task to a
+# no-op; weakening validate-commit-msg.sh so commitlint stops catching
+# anything; swallowing a failure inside scripts/mise/test.sh so shell-tests
+# reports green regardless of what scripts/tests/*.bash actually assert;
+# making scripts/check-paired-tests.sh exit 0 so a script can reach the
+# default branch with no test, which is how six of them already did;
+# editing configure-protection.sh to drop a check from the required list, or
+# flip require_code_owner_reviews back to false; flipping
+# .harnx/instance-config.toml's identity_policy from "private" to "public", or
+# widening its allowed_authors, so a commit author the repo previously refused
+# is silently accepted) must itself pass human review before it can merge.
+# The entries below are DIRECTORY rules wherever a directory holds
+# gate-defining files, and named files only where a single file stands alone.
+# That is a deliberate change of shape rather than a longer list: a list built
+# by enumerating today's files is correct until the next file is added, and the
+# gap it leaves is silent. The directories cover every script that executes a
+# required check, every test that proves one works, every workflow that
+# declares one, and the configuration each reads.
+# THE WHOLE DIRECTORY, not the four subdirectories and one file it used to
+# enumerate. Enumeration is what fails here: every script under scripts/ either
+# executes a required check or is the test that proves one works, so a NEW
+# script arriving at a path nobody listed is unprotected by default, and the
+# person adding it is the person least likely to notice. That is not
+# hypothetical, it is how scripts/check-paired-tests.sh would have arrived: it
+# gates the required "pre-commit" check and sits at the top level, which the
+# old list covered for exactly one file by name.
+/scripts/ @fabioluiz1
+/.github/workflows/ @fabioluiz1
+/.github/CODEOWNERS @fabioluiz1
+# AGENTS.md is here for a different reason than everything else on this list,
+# and the distinction is worth keeping straight. Every other entry DEFINES or
+# EXECUTES a required check, so editing it can make a gate pass that should
+# have failed. AGENTS.md executes nothing and gates nothing: no check reads it,
+# and editing it cannot turn a red check green.
+#
+# It is protected because this repository is an agentic-development harness and
+# AGENTS.md is the instruction set agents read before acting. A silent edit
+# cannot weaken a gate, but it can change what an agent believes it is supposed
+# to do, which is a distinct kind of tampering that the rest of this list does
+# not cover.
+/AGENTS.md @fabioluiz1
+/.pre-commit-config.yaml @fabioluiz1
+/.harnx/instance-config.toml @fabioluiz1
+/mise.toml @fabioluiz1
+/.yamllint.yaml @fabioluiz1
+/.vale.ini @fabioluiz1
+/styles/ @fabioluiz1

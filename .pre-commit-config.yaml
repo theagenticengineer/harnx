@@ -1,0 +1,106 @@
+# TRUST-ANCHOR SUBSET. This is deliberately NOT the repository's full
+# .pre-commit-config.yaml, for the same reason mise.toml and ci.yml here are
+# subsets: this branch carries the ai-review security core, not the hygiene
+# floor. The full file, with all fourteen gates, lives on the child branch
+# immediately above this one and replaces this one wholesale at the same path.
+#
+# WHAT IS HERE, and why only this. Issue #37 criterion 43 scopes the anchor's
+# local gates to the trunk verifying its OWN code: shellcheck and shfmt over
+# its own shell scripts, plus the paired-test gate criterion 27 defines. Not
+# vale, not markdownlint, not taplo, not gitleaks; those are floor gates over
+# floor artifacts and pulling them in here would make this branch a second
+# copy of the floor rather than the smallest set that has to be trusted.
+#
+# ONE HOOK HERE IS NOT A LINTER, and it is the reason this file is no longer
+# purely a formatting subset. `locally-reviewed` refuses a push whose tree has
+# not passed a clean full ai-review. It is scoped to the anchor by exactly the
+# same test as everything above: the review engine lives on this branch, so
+# reviewing this branch's own code is this branch verifying itself.
+#
+# It closes a real hole rather than adding symmetry. This branch is the default
+# branch, so every `workflow_run` in the stack resolves its YAML and every
+# script it checks out from here. Until this hook existed the child branch
+# gated its pushes on a clean local review and this one gated its pushes on
+# nothing, which put the widest blast radius in the repository behind the
+# weakest door.
+#
+# EVERY HOOK IS `local`, running the tool mise pinned, rather than a remote
+# hook repository pinning its own copy. The child branch's config uses remote
+# repos for shellcheck and shfmt, which is fine there because that branch has
+# no separate mise pins for them to disagree with. Here it would create two
+# pinned versions of one tool, one in mise.toml for `mise run lint` and one in
+# this file for the hook, free to drift apart and to disagree about whether a
+# script is formatted. One pin, in mise.toml, read by both paths.
+#
+# EVERY HOOK DECLARES ITS STAGE. A hook with no `stages:` key runs at EVERY
+# installed stage, and setup-hooks.sh installs four of them, so an unstaged
+# hook would run shellcheck again on every push and on every checkout, and
+# would run it at commit-msg time against the commit message file, where it
+# matches nothing and reports "(no files to check) Skipped". None of that
+# catches anything the pre-commit stage did not already catch a moment
+# earlier; it just spends time and prints lines, and a tool that decorates
+# every operation with output nobody acts on teaches its readers to skip the
+# output that matters. scripts/tests/hook-stages.bash fails a hook added here
+# without a stage.
+repos:
+  - repo: local
+    hooks:
+      - id: shellcheck
+        name: shellcheck
+        entry: mise exec -- shellcheck
+        language: system
+        files: \.(sh|bash)$
+        stages: [pre-commit]
+      - id: shfmt
+        name: shfmt
+        # `-d` makes this a real gate: it prints a diff and exits non-zero on
+        # an unformatted file, instead of the default that writes formatted
+        # output to stdout and always exits 0. `-i 2` matches the indentation
+        # every script here is already written in.
+        entry: mise exec -- shfmt -i 2 -d
+        language: system
+        files: \.(sh|bash)$
+        stages: [pre-commit]
+      - id: check-paired-tests
+        name: check-paired-tests
+        entry: scripts/check-paired-tests.sh
+        language: system
+        # always_run with no filenames: the gate's question is about the whole
+        # tree ("does every script have a test"), not about the files in one
+        # commit. Passing it filenames would let a commit that deletes a test
+        # pass, because the deleted file is not among them.
+        always_run: true
+        pass_filenames: false
+        stages: [pre-commit]
+      - id: locally-reviewed
+        name: check-locally-reviewed
+        entry: scripts/ai-review/check-locally-reviewed.sh
+        language: system
+        # always_run with no filenames, for the same reason as the gate above
+        # and one more. The question is about the WHOLE TREE ("was this exact
+        # content reviewed"), so a per-file invocation could not answer it: the
+        # recorded marker is one hash over everything, and a push carrying an
+        # unreviewed change to a file pre-commit did not name would pass.
+        always_run: true
+        pass_filenames: false
+        # AT pre-push, and the stage is the whole design. At pre-commit it
+        # would demand a review of every intermediate commit in a series, which
+        # is neither useful nor affordable; the thing that must be reviewed is
+        # what actually leaves the machine.
+        stages: [pre-push]
+      - id: round-cap
+        name: check-round-cap
+        entry: scripts/ai-review/check-round-cap.sh
+        language: system
+        always_run: true
+        pass_filenames: false
+        # LAST, so its message is the final thing on the screen. It is the rarer
+        # and the more serious of the two: `locally-reviewed` says "run the
+        # review", which is an ordinary step, while this one says "this loop is
+        # not converging and is stopping". Both still run and both still report.
+        #
+        # THE SAME STAGE AS THE REVIEW GATE, deliberately. The way out of the
+        # cap is a clean full local review, which is what the hook above
+        # demands, so the two belong at the same chokepoint: reaching the cap
+        # and being told to review are the same conversation.
+        stages: [pre-push]
